@@ -40,6 +40,7 @@ def run_scheduled_strategies():
 
             try:
                 from app.services.strategy import _kline_to_dataframe
+                from app.models.market_data import KLine
 
                 # 查询 K 线数据（同步）
                 klines_raw = db.execute(
@@ -67,7 +68,6 @@ def run_scheduled_strategies():
                 df = _kline_to_dataframe(klines)
 
                 # 执行策略
-                from app.models.market_data import KLine
                 from app.services.strategy import (
                     ma_cross_strategy, macd_strategy, kdj_strategy,
                     bollinger_strategy, grid_strategy,
@@ -93,7 +93,7 @@ def run_scheduled_strategies():
                     status="success",
                     signals=signals,
                     message=f"信号数: {len(signals)}",
-                    duration=0,
+                    duration_ms=0,
                 )
                 db.add(log)
                 db.commit()
@@ -169,7 +169,7 @@ def run_single_strategy(strategy_id: int):
             status="success",
             signals=signals,
             message=f"手动执行成功，{len(signals)} 个信号",
-            duration=0,
+            duration_ms=0,
         )
         db.add(log)
         db.commit()
