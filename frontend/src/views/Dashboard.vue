@@ -197,13 +197,14 @@ onUnmounted(() => {
   font-size: 13px;
 }
 .quick-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
+  flex-wrap: wrap;
   gap: 10px;
 }
 .quick-actions .el-button {
-  width: 100%;
+  flex: 0 0 calc(50% - 5px);
   height: 36px;
+  justify-content: center;
 }
 .system-status {
   display: flex;
