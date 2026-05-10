@@ -27,10 +27,10 @@
         <el-card shadow="hover">
           <template #header><span>⚡ 快速操作</span></template>
           <div class="quick-actions">
-            <el-button type="primary" @click="$router.push('/market')">查看行情</el-button>
-            <el-button type="success" @click="$router.push('/strategy')">创建策略</el-button>
-            <el-button type="warning" @click="$router.push('/backtest')">运行回测</el-button>
-            <el-button type="danger" @click="$router.push('/trade')">实盘交易</el-button>
+            <div class="action-cell"><el-button type="primary" @click="$router.push('/market')" style="width:100%;padding:8px 4px">查看行情</el-button></div>
+            <div class="action-cell"><el-button type="success" @click="$router.push('/strategy')" style="width:100%;padding:8px 4px">创建策略</el-button></div>
+            <div class="action-cell"><el-button type="warning" @click="$router.push('/backtest')" style="width:100%;padding:8px 4px">运行回测</el-button></div>
+            <div class="action-cell"><el-button type="danger" @click="$router.push('/trade')" style="width:100%;padding:8px 4px">实盘交易</el-button></div>
           </div>
         </el-card>
         <el-card shadow="hover" style="margin-top: 16px">
@@ -201,9 +201,12 @@ onUnmounted(() => {
   grid-template-columns: 1fr 1fr;
   gap: 10px;
 }
+.quick-actions .action-cell {
+  display: flex;
+}
 .quick-actions .el-button {
-  width: 100%;
   height: 36px;
+  justify-content: center;
 }
 .system-status {
   display: flex;
