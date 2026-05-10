@@ -1,0 +1,25 @@
+2026-04-30 21:38:18.286 | ERROR    | app.main:global_exception_handler:75 - 未捕获异常: Object of type bytes is not JSON serializable | 路径: /api/v1/auth/login
+2026-04-30 21:39:34.445 | ERROR    | app.main:global_exception_handler:75 - 未捕获异常: Object of type bytes is not JSON serializable | 路径: /api/v1/auth/login
+2026-04-30 21:39:39.303 | ERROR    | app.main:global_exception_handler:75 - 未捕获异常: Object of type bytes is not JSON serializable | 路径: /api/v1/auth/login
+2026-04-30 21:40:17.043 | ERROR    | app.main:global_exception_handler:75 - 未捕获异常: Object of type bytes is not JSON serializable | 路径: /api/v1/auth/login
+2026-04-30 21:50:47.706 | ERROR    | app.main:global_exception_handler:75 - 未捕获异常: can't subtract offset-naive and offset-aware datetimes | 路径: /api/v1/market/klines
+2026-04-30 21:50:53.492 | ERROR    | app.main:global_exception_handler:75 - 未捕获异常: can't subtract offset-naive and offset-aware datetimes | 路径: /api/v1/market/klines
+2026-04-30 21:51:09.874 | ERROR    | app.main:global_exception_handler:75 - 未捕获异常: can't subtract offset-naive and offset-aware datetimes | 路径: /api/v1/market/klines
+2026-04-30 21:51:16.473 | ERROR    | app.main:global_exception_handler:75 - 未捕获异常: can't subtract offset-naive and offset-aware datetimes | 路径: /api/v1/market/klines
+2026-04-30 21:51:45.403 | ERROR    | app.main:global_exception_handler:75 - 未捕获异常: can't subtract offset-naive and offset-aware datetimes | 路径: /api/v1/market/klines
+2026-04-30 21:52:30.314 | ERROR    | app.main:global_exception_handler:75 - 未捕获异常: Object of type bytes is not JSON serializable | 路径: /api/v1/auth/login
+2026-04-30 21:52:39.664 | ERROR    | app.main:global_exception_handler:75 - 未捕获异常: 'UserCreate' object is not subscriptable | 路径: /api/v1/auth/register
+2026-04-30 21:52:39.675 | ERROR    | app.main:global_exception_handler:75 - 未捕获异常: Object of type bytes is not JSON serializable | 路径: /api/v1/auth/login
+2026-04-30 21:53:44.509 | ERROR    | app.main:global_exception_handler:75 - 未捕获异常: can't subtract offset-naive and offset-aware datetimes | 路径: /api/v1/market/klines
+2026-04-30 21:53:49.931 | ERROR    | app.main:global_exception_handler:75 - 未捕获异常: 'UserCreate' object is not subscriptable | 路径: /api/v1/auth/register
+2026-04-30 21:54:10.199 | ERROR    | app.main:global_exception_handler:75 - 未捕获异常: (sqlite3.IntegrityError) column username is not unique
+[SQL: INSERT INTO users (username, email, hashed_password, nickname, role, is_active, is_superuser, max_position_ratio, max_daily_loss, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)]
+[parameters: ('admin', 'admin@test.com', '$2b$12$2oRb6.eKIO5osdPDNYTEiunfqAqIqU30OOfbqkIp5ajBPtklCJf9e', None, 'VIEWER', 1, 0, 30, 5, '2026-04-30 13:54:10.197713', '2026-04-30 13:54:10.197719')]
+(Background on this error at: https://sqlalche.me/e/20/gkpj) | 路径: /api/v1/auth/register
+2026-04-30 21:54:16.565 | ERROR    | app.main:global_exception_handler:75 - 未捕获异常: Object of type bytes is not JSON serializable | 路径: /api/v1/auth/login
+2026-04-30 21:55:38.943 | ERROR    | app.main:global_exception_handler:75 - 未捕获异常: Object of type bytes is not JSON serializable | 路径: /api/v1/auth/login
+2026-04-30 21:55:38.974 | ERROR    | app.main:global_exception_handler:75 - 未捕获异常: Object of type bytes is not JSON serializable | 路径: /api/v1/auth/login
+2026-04-30 21:57:41.060 | ERROR    | app.main:global_exception_handler:75 - 未捕获异常: can't subtract offset-naive and offset-aware datetimes | 路径: /api/v1/market/klines
+2026-04-30 21:57:48.981 | ERROR    | app.main:global_exception_handler:75 - 未捕获异常: can't subtract offset-naive and offset-aware datetimes | 路径: /api/v1/market/klines
+2026-04-30 21:59:10.403 | ERROR    | app.main:global_exception_handler:75 - 未捕获异常: get_orders() got an unexpected keyword argument 'symbol' | 路径: /api/v1/trade/orders
+2026-04-30 21:59:10.431 | ERROR    | app.main:global_exception_handler:75 - 未捕获异常: get_positions() got an unexpected keyword argument 'symbol' | 路径: /api/v1/trade/positions

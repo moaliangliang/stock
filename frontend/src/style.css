@@ -1,0 +1,80 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #app {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background-color: #f0f2f5;
+}
+
+/* Grid 布局适配 */
+.el-row {
+  margin-bottom: 16px;
+}
+
+/* 卡片统一样式 */
+.card-center {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+/* 数字样式 */
+.price-up {
+  color: #f56c6c;
+}
+
+.price-down {
+  color: #67c23a;
+}
+
+/* 滚动条美化 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c0c4cc;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 暗黑模式覆写 */
+html.dark .app-main {
+  background: #141414 !important;
+}
+html.dark .app-header {
+  background: #1d1d1d !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3) !important;
+}
+html.dark .el-card {
+  background: #1d1d1d !important;
+  border-color: #303030 !important;
+}
+html.dark .login-card,
+html.dark .register-card {
+  background: #1d1d1d !important;
+}
+html.dark .login-title,
+html.dark .register-title {
+  color: #e0e0e0 !important;
+}
+html.dark .stat-label {
+  color: #aaa !important;
+}
+html.dark .kline-loading-mask {
+  background: rgba(29, 29, 29, 0.85) !important;
+}
+html.dark .el-breadcrumb {
+  color: #aaa !important;
+}
+html.dark .el-breadcrumb__inner {
+  color: #aaa !important;
+}

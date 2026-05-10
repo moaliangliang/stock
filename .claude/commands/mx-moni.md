@@ -1,0 +1,1 @@
+以MX_APIKEY为环境变量，执行 ~/skills/mx-moni/mx_moni.py "$ARGUMENTS"，打印返回结果。脚本需要：cd ~/skills/mx-moni && python3 mx_moni.py "$ARGUMENTS"

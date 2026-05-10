@@ -1,0 +1,41 @@
+# 环境配置（通过 docker-compose 注入）
+.env
+.env.local
+.env.production
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+venv/
+.venv/
+
+# 数据库
+*.db
+*.sqlite3
+
+# 日志
+logs/*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# 测试
+tests/
+.pytest_cache/
+htmlcov/
+.coverage
+
+# 文档
+*.md
+!requirements.txt

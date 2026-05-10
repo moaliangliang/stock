@@ -1,0 +1,221 @@
+{
+  "招商银行": {
+    "code": "600036.SH",
+    "buy_hold_return": -4.745166959578209,
+    "data_points": 323,
+    "first_close": 39.83,
+    "last_close": 37.94,
+    "min_close": 37.94,
+    "max_close": 48.24,
+    "grid_lower": 39.836999999999996,
+    "grid_upper": 45.828,
+    "strategies": {
+      "MA_CROSS": {
+        "total_return": -0.087862,
+        "annual_return": -0.06608,
+        "sharpe_ratio": -0.5255,
+        "win_rate": 0.2727,
+        "max_drawdown": 0.171043,
+        "total_trades": 11,
+        "profit_trades": 3,
+        "loss_trades": 8,
+        "profit_factor": 0.5003,
+        "final_equity": 91213.78
+      },
+      "MACD": {
+        "total_return": -0.13603,
+        "annual_return": -0.102996,
+        "sharpe_ratio": -0.7544,
+        "win_rate": 0.2667,
+        "max_drawdown": 0.184204,
+        "total_trades": 15,
+        "profit_trades": 4,
+        "loss_trades": 11,
+        "profit_factor": 0.4124,
+        "final_equity": 86396.95
+      },
+      "KDJ": {
+        "total_return": 0.0,
+        "annual_return": 0.0,
+        "sharpe_ratio": 0.0,
+        "win_rate": 0.0,
+        "max_drawdown": 0.0,
+        "total_trades": 0,
+        "profit_trades": 0,
+        "loss_trades": 0,
+        "profit_factor": Infinity,
+        "final_equity": 100000.0
+      },
+      "BOLLINGER": {
+        "total_return": -0.071126,
+        "annual_return": -0.053371,
+        "sharpe_ratio": -0.3993,
+        "win_rate": 0.75,
+        "max_drawdown": 0.150372,
+        "total_trades": 4,
+        "profit_trades": 3,
+        "loss_trades": 1,
+        "profit_factor": 34.8557,
+        "final_equity": 92887.37
+      },
+      "GRID": {
+        "total_return": -0.138324,
+        "annual_return": -0.104767,
+        "sharpe_ratio": -0.7425,
+        "win_rate": 0.9118,
+        "max_drawdown": 0.169392,
+        "total_trades": 34,
+        "profit_trades": 31,
+        "loss_trades": 3,
+        "profit_factor": 6.2508,
+        "final_equity": 86167.63
+      }
+    }
+  },
+  "鲁抗医药": {
+    "code": "600789.SH",
+    "buy_hold_return": -5.468750000000002,
+    "data_points": 323,
+    "first_close": 8.96,
+    "last_close": 8.47,
+    "min_close": 7.89,
+    "max_close": 11.33,
+    "grid_lower": 8.2845,
+    "grid_upper": 10.763499999999999,
+    "strategies": {
+      "MA_CROSS": {
+        "total_return": -0.203305,
+        "annual_return": -0.155455,
+        "sharpe_ratio": -0.548,
+        "win_rate": 0.2,
+        "max_drawdown": 0.247654,
+        "total_trades": 10,
+        "profit_trades": 2,
+        "loss_trades": 8,
+        "profit_factor": 0.2076,
+        "final_equity": 79669.54
+      },
+      "MACD": {
+        "total_return": -0.282487,
+        "annual_return": -0.218684,
+        "sharpe_ratio": -0.7163,
+        "win_rate": 0.2143,
+        "max_drawdown": 0.374438,
+        "total_trades": 14,
+        "profit_trades": 3,
+        "loss_trades": 11,
+        "profit_factor": 0.1505,
+        "final_equity": 71751.31
+      },
+      "KDJ": {
+        "total_return": 0.0,
+        "annual_return": 0.0,
+        "sharpe_ratio": 0.0,
+        "win_rate": 0.0,
+        "max_drawdown": 0.0,
+        "total_trades": 0,
+        "profit_trades": 0,
+        "loss_trades": 0,
+        "profit_factor": Infinity,
+        "final_equity": 100000.0
+      },
+      "BOLLINGER": {
+        "total_return": 0.051221,
+        "annual_return": 0.037832,
+        "sharpe_ratio": 0.3501,
+        "win_rate": 1.0,
+        "max_drawdown": 0.127493,
+        "total_trades": 4,
+        "profit_trades": 4,
+        "loss_trades": 0,
+        "profit_factor": Infinity,
+        "final_equity": 105122.08
+      },
+      "GRID": {
+        "total_return": -0.001033,
+        "annual_return": -0.000768,
+        "sharpe_ratio": 0.1289,
+        "win_rate": 0.9722,
+        "max_drawdown": 0.2785,
+        "total_trades": 36,
+        "profit_trades": 35,
+        "loss_trades": 1,
+        "profit_factor": 2269.08,
+        "final_equity": 99896.75
+      }
+    }
+  },
+  "长城汽车": {
+    "code": "601633.SH",
+    "buy_hold_return": -17.050691244239633,
+    "data_points": 323,
+    "first_close": 23.87,
+    "last_close": 19.8,
+    "min_close": 19.8,
+    "max_close": 27.52,
+    "grid_lower": 20.790000000000003,
+    "grid_upper": 26.144,
+    "strategies": {
+      "MA_CROSS": {
+        "total_return": -0.117482,
+        "annual_return": -0.08872,
+        "sharpe_ratio": -0.6338,
+        "win_rate": 0.25,
+        "max_drawdown": 0.173098,
+        "total_trades": 8,
+        "profit_trades": 2,
+        "loss_trades": 6,
+        "profit_factor": 0.4618,
+        "final_equity": 88251.75
+      },
+      "MACD": {
+        "total_return": -0.02673,
+        "annual_return": -0.019939,
+        "sharpe_ratio": -0.0495,
+        "win_rate": 0.2727,
+        "max_drawdown": 0.135144,
+        "total_trades": 11,
+        "profit_trades": 3,
+        "loss_trades": 8,
+        "profit_factor": 0.8707,
+        "final_equity": 97327.0
+      },
+      "KDJ": {
+        "total_return": 0.0,
+        "annual_return": 0.0,
+        "sharpe_ratio": 0.0,
+        "win_rate": 0.0,
+        "max_drawdown": 0.0,
+        "total_trades": 0,
+        "profit_trades": 0,
+        "loss_trades": 0,
+        "profit_factor": Infinity,
+        "final_equity": 100000.0
+      },
+      "BOLLINGER": {
+        "total_return": -0.048752,
+        "annual_return": -0.036473,
+        "sharpe_ratio": -0.2307,
+        "win_rate": 0.75,
+        "max_drawdown": 0.114109,
+        "total_trades": 4,
+        "profit_trades": 3,
+        "loss_trades": 1,
+        "profit_factor": 12.0009,
+        "final_equity": 95124.83
+      },
+      "GRID": {
+        "total_return": -0.144027,
+        "annual_return": -0.109176,
+        "sharpe_ratio": -0.5717,
+        "win_rate": 0.9667,
+        "max_drawdown": 0.258033,
+        "total_trades": 30,
+        "profit_trades": 29,
+        "loss_trades": 1,
+        "profit_factor": 6.8006,
+        "final_equity": 85597.28
+      }
+    }
+  }
+}

@@ -1,0 +1,4 @@
+2026-04-30 21:33:13.791 | INFO     | app.main:lifespan:26 - 🚀 Quantitative Trading Platform v1.0.0 启动中...
+2026-04-30 21:33:13.966 | INFO     | app.main:lifespan:28 - ✅ 数据库初始化完成
+2026-04-30 21:33:13.966 | INFO     | app.main:lifespan:31 - ✅ WebSocket 行情推送已启动
+2026-04-30 21:36:56.784 | INFO     | app.main:lifespan:36 - 👋 应用已关闭

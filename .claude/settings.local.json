@@ -1,0 +1,12 @@
+{
+  "env": {
+    "MX_APIKEY": "mkt_QwXsdfMhLbTFxN2LPAovHmtFuUIGLfrOeCGJroTsY8k"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "WebSearch(*)",
+      "WebFetch(*)"
+    ]
+  }
+}

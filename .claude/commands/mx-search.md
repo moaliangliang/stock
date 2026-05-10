@@ -1,0 +1,1 @@
+以MX_APIKEY为环境变量，执行 ~/skills/mx-search/mx_search.py "$ARGUMENTS"，打印返回结果。脚本需要：cd ~/skills/mx-search && python3 mx_search.py "$ARGUMENTS"
