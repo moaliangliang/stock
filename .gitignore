@@ -31,6 +31,16 @@ logs/*.log
 
 # Database
 *.db
+*.db-shm
+*.db-wal
 
 # Docker
 docker-data/
+
+# State files
+*_state.json
+.claude/
+
+# Generated reports & screenshots
+*.png
+*分析报告*.md
