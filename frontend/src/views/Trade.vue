@@ -58,28 +58,40 @@
               </div>
             </div>
           </template>
-          <el-table :data="positions" stripe size="small" v-loading="posLoading">
-            <el-table-column label="标的" width="120">
+          <el-table :data="positions" stripe size="small" v-loading="posLoading" show-summary :summary-method="positionSummary" :default-sort="{prop: 'market_value', order: 'descending'}">
+            <el-table-column prop="symbol" label="标的" width="130" sortable>
               <template #default="{ row }">
                 <div>{{ getSymbolName(row.symbol) }}</div>
                 <div style="font-size:11px;color:#999">({{ row.symbol }})</div>
               </template>
             </el-table-column>
-            <el-table-column prop="quantity" label="持仓" width="80" />
-            <el-table-column prop="available_quantity" label="可用" width="80" />
-            <el-table-column prop="cost_price" label="成本价" width="90" />
-            <el-table-column prop="current_price" label="现价" width="90" />
-            <el-table-column prop="pnl" label="盈亏" width="100">
+            <el-table-column prop="quantity" label="持仓" width="80" sortable />
+            <el-table-column prop="available_quantity" label="可用" width="80" sortable />
+            <el-table-column prop="cost_price" label="成本价" width="90" sortable />
+            <el-table-column prop="current_price" label="现价" width="90" sortable />
+            <el-table-column prop="market_value" label="市值" width="100" sortable>
+              <template #default="{ row }">
+                {{ (row.market_value || 0).toLocaleString() }}
+              </template>
+            </el-table-column>
+            <el-table-column prop="pnl" label="盈亏" width="100" sortable>
               <template #default="{ row }">
                 <span :class="(row.pnl || 0) >= 0 ? 'price-up' : 'price-down'">
-                  {{ row.pnl?.toFixed(2) }}
+                  {{ (row.pnl || 0).toLocaleString() }}
                 </span>
               </template>
             </el-table-column>
-            <el-table-column prop="pnl_ratio" label="盈亏比" width="80">
+            <el-table-column prop="pnl_ratio" label="盈亏比" width="80" sortable>
               <template #default="{ row }">
                 <span :class="(row.pnl_ratio || 0) >= 0 ? 'price-up' : 'price-down'">
                   {{ row.pnl_ratio?.toFixed(2) }}%
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="day_pnl" label="日盈亏" width="100" sortable>
+              <template #default="{ row }">
+                <span :class="(row.day_pnl || 0) >= 0 ? 'price-up' : 'price-down'">
+                  {{ (row.day_pnl || 0).toLocaleString() }}
                 </span>
               </template>
             </el-table-column>
@@ -283,9 +295,35 @@ async function submitImport() {
 }
 
 // ----- 现有逻辑 -----
+const POSITION_NAMES: Record<string, string> = {
+  '002463': '沪电股份', '002475': '立讯精密', '600028': '中国石化',
+  '600036': '招商银行', '600789': '鲁抗医药', '601633': '长城汽车',
+  '159205': '创业板ETF', '159206': '卫星ETF', '159326': '电网设备',
+  '159516': '5G通信', '159599': '芯片指数', '159637': '新能龙头',
+  '159941': '纳指ETF', '510050': '上证50', '510330': '沪深300',
+  '513180': '恒生科技', '513500': '标普500', '520530': '港科ETF',
+  '560860': '有色ETF',
+}
+
 function getSymbolName(symbol: string): string {
-  const s = symbols.value.find((x: any) => x.symbol === symbol)
-  return s?.name || symbol
+  const s = symbols.value.find((x: any) => x.symbol === symbol || x.symbol.startsWith(symbol + '.'))
+  if (s?.name) return s.name
+  return POSITION_NAMES[symbol] || symbol
+}
+
+function positionSummary({ columns, data }: any) {
+  const sums: string[] = []
+  columns.forEach((_: any, idx: number) => {
+    if (idx === 0) { sums[idx] = '合计'; return }
+    const prop = columns[idx].property
+    if (prop === 'market_value' || prop === 'pnl' || prop === 'day_pnl') {
+      const total = data.reduce((acc: number, row: any) => acc + (Number(row[prop]) || 0), 0)
+      sums[idx] = total.toLocaleString()
+    } else {
+      sums[idx] = ''
+    }
+  })
+  return sums
 }
 
 const orderStatusLabel = (s: string) => ({ pending: '待成交', partial: '部分成交', filled: '已成交', canceled: '已撤销', rejected: '已拒绝' }[s] || s)

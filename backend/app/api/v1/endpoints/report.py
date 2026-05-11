@@ -2,6 +2,7 @@
 报告下载接口 - 关联 mx_data 分析报告和回测结果到前端
 """
 from __future__ import annotations
+import json
 import os
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +19,7 @@ router = APIRouter(prefix="/reports", tags=["分析报告"])
 # 报告目录
 REPORT_DIR = Path("/root/.openclaw/workspace/mx_data/output")
 ALERT_LOG = Path("/root/workspace/stock/buy_signal_alerts.log")
+STATE_FILE = Path("/root/workspace/stock/buy_signal_state.json")
 
 
 class ReportItem(BaseModel):
@@ -102,14 +104,24 @@ async def download_report(filename: str):
 
 @router.get("/alert-log")
 async def get_alert_log():
-    """获取买入信号提醒日志"""
-    if not ALERT_LOG.exists():
-        return Response(data={"content": "暂无买入信号日志", "updated": None})
+    """获取买入信号提醒日志 + 当前最新价格"""
+    result = {"content": "暂无买入信号日志", "updated": None, "current_prices": None}
 
-    stat = ALERT_LOG.stat()
-    content = ALERT_LOG.read_text(encoding="utf-8")
-    return Response(data={
-        "content": content[-10000:] if len(content) > 10000 else content,
-        "updated": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-        "size": stat.st_size,
-    })
+    if ALERT_LOG.exists():
+        stat = ALERT_LOG.stat()
+        content = ALERT_LOG.read_text(encoding="utf-8")
+        result["content"] = content[-10000:] if len(content) > 10000 else content
+        result["updated"] = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+
+    if STATE_FILE.exists():
+        try:
+            state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            result["current_prices"] = {
+                "updated": state.get("updated"),
+                "stocks": state.get("stocks", {}),
+                "active_signals": state.get("active_signals", []),
+            }
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    return Response(data=result)

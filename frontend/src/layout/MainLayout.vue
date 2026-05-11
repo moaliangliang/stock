@@ -38,6 +38,10 @@
           <el-icon><Warning /></el-icon>
           <span>风控管理</span>
         </el-menu-item>
+        <el-menu-item index="/dca">
+          <el-icon><TrendCharts /></el-icon>
+          <span>定投回测</span>
+        </el-menu-item>
         <el-menu-item index="/decision">
           <el-icon><Opportunity /></el-icon>
           <span>投资决策</span>

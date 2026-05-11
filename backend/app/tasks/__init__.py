@@ -4,3 +4,4 @@ from app.tasks.backtest import run_async_backtest
 from app.tasks.alert import check_price_alerts
 from app.tasks.stock_push import run_stock_push
 from app.tasks.signal_scanner import run_signal_scanner
+from app.tasks.ma_monitor import run_ma_monitor

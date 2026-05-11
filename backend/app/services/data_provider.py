@@ -46,6 +46,8 @@ def refresh_all_tickers(db: Session):
         _refresh_tickers_from_eastmoney(db, symbols)
     elif settings.MARKET_DATA_PROVIDER == "sina":
         _refresh_tickers_from_sina(db, symbols)
+    elif settings.MARKET_DATA_PROVIDER == "eastmoney_first":
+        _refresh_tickers_with_fallback(db, symbols)
     else:
         _refresh_tickers_mock(db, symbols)
 
@@ -290,6 +292,77 @@ def fetch_klines_from_sina(
     except Exception as e:
         logger.warning("新浪财经K线获取失败 %s: %s", symbol, e)
         return None
+
+
+# ---------------------------------------------------------------------------
+# Ticker — Eastmoney → Sina 自动降级
+# ---------------------------------------------------------------------------
+
+
+def _refresh_tickers_with_fallback(db: Session, symbols: List[SymbolInfo]):
+    """先尝试东方财富，失败则自动降级到新浪财经。"""
+    a_stocks = [s for s in symbols if s.symbol.endswith((".SH", ".SZ"))]
+    if not a_stocks:
+        return
+
+    # 1. Try Eastmoney first
+    try:
+        from app.utils.eastmoney_client import fetch_realtime_quotes
+
+        quotes = fetch_realtime_quotes([s.symbol for s in a_stocks])
+    except Exception as e:
+        logger.warning("东方财富行情获取失败，降级到新浪: %s", e)
+        quotes = None
+
+    if quotes:
+        symbol_list = [s.symbol for s in a_stocks]
+        existing = _get_ticker_map(db, symbol_list)
+        updated = 0
+        for sym in a_stocks:
+            q = quotes.get(sym.symbol)
+            if not q or q.get("last_price") is None:
+                continue
+            ticker = existing.get(sym.symbol)
+            if ticker:
+                _update_ticker_from_quote(ticker, q, source="eastmoney")
+            else:
+                _create_ticker_from_quote(db, sym, q, source="eastmoney")
+            updated += 1
+        if updated > 0:
+            db.flush()
+            logger.info("东方财富行情刷新完成: %d/%d", updated, len(a_stocks))
+            return
+        logger.info("东方财富返回空数据，降级到新浪")
+
+    # 2. Fallback to Sina
+    try:
+        from app.utils.sina_client import fetch_realtime_quotes
+
+        quotes = fetch_realtime_quotes([s.symbol for s in a_stocks])
+    except Exception as e:
+        logger.warning("新浪财经行情也获取失败: %s", e)
+        return
+
+    if not quotes:
+        logger.info("新浪财经也返回空数据，跳过行情刷新")
+        return
+
+    symbol_list = [s.symbol for s in a_stocks]
+    existing = _get_ticker_map(db, symbol_list)
+    updated = 0
+    for sym in a_stocks:
+        q = quotes.get(sym.symbol)
+        if not q or q.get("last_price") is None:
+            continue
+        ticker = existing.get(sym.symbol)
+        if ticker:
+            _update_ticker_from_quote(ticker, q, source="sina")
+        else:
+            _create_ticker_from_quote(db, sym, q, source="sina")
+        updated += 1
+
+    db.flush()
+    logger.info("新浪财经行情刷新完成(降级): %d/%d", updated, len(a_stocks))
 
 
 # ---------------------------------------------------------------------------

@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
 
     # 行情
-    MARKET_DATA_PROVIDER: str = "sina"  # sina | eastmoney | eastmoney_skills | mock | akshare
+    MARKET_DATA_PROVIDER: str = "sina"  # sina | eastmoney | eastmoney_first | mock
     MARKET_DATA_UPDATE_INTERVAL: int = 5
     DATA_AUTHENTICITY_STRICT: bool = False  # 严格模式：禁止降级到 mock，数据获取失败直接报错
     EASTMONEY_SKILLS_API_KEY: str = ""  # 东方财富妙想Skills API密钥
@@ -78,6 +78,14 @@ class Settings(BaseSettings):
     DEFAULT_MAX_POSITION_RATIO: float = 0.3
     DEFAULT_MAX_DAILY_LOSS: float = 0.05
     DEFAULT_STOP_LOSS_RATIO: float = 0.02
+
+    # 自动交易
+    AUTO_TRADE_ENABLED: bool = False         # 总开关：是否启用自动交易
+    AUTO_TRADE_DRY_RUN: bool = True          # 干跑模式：只记录不实际下单（首次启用建议先开）
+    AUTO_TRADE_MIN_LEVEL: str = "STRONG_BUY" # 触发自动交易的最低信号级别: STRONG_BUY | BUY
+    AUTO_TRADE_MAX_PER_ORDER: float = 50000  # 单笔自动交易最大金额（元）
+    AUTO_TRADE_MAX_DAILY_ORDERS: int = 5     # 每日自动交易最大笔数
+    AUTO_TRADE_POSITION_PCT: float = 0.1     # 单只股票自动交易仓位占比（相对总资金）
 
     # CORS
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000"

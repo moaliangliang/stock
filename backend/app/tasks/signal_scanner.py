@@ -13,6 +13,7 @@ Bark 推送配置来自 settings，与 stock-push.sh 共用同一 KEY。
 import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from collections import defaultdict
 
 import numpy as np
 import requests
@@ -127,6 +128,69 @@ def _detect_macd_divergence(closes: np.ndarray) -> bool:
         if p2[1] < p1[1] and m2[2] > m1[2]:
             return True
     return False
+
+
+def confirm_multi_timeframe(symbol: str, db, daily_kline_count: int = 0) -> float:
+    """
+    Multi-timeframe confirmation: check 5min/15min trend alignment with daily signal.
+    Returns a confidence multiplier: >1.0 = confirmed, <1.0 = weak, 0 = rejected.
+    """
+    try:
+        # Load 5min K-lines (last 1 day = ~48 bars) and 15min (last 3 days = ~48 bars)
+        short_rows = db.execute(
+            select(KLine)
+            .where(KLine.symbol == symbol, KLine.interval.in_(["5m", "15m"]))
+            .order_by(KLine.interval.asc(), KLine.timestamp.desc())
+            .limit(120)
+        ).scalars().all()
+
+        m5_bars = []
+        m15_bars = []
+        for r in short_rows:
+            bar = {"close": r.close, "high": r.high, "low": r.low, "volume": r.volume}
+            if r.interval == "5m":
+                m5_bars.append(bar)
+            else:
+                m15_bars.append(bar)
+
+        score = 1.0
+
+        # Check 5min: price relative to short-term MA, recent momentum
+        if len(m5_bars) >= 20:
+            m5_closes = np.array([b["close"] for b in m5_bars[:20]])
+            m5_ma5 = np.mean(m5_closes[:5])
+            m5_ma20 = np.mean(m5_closes)
+            m5_latest = m5_closes[0]
+
+            # Price above 5-period MA on 5min = short-term uptrend
+            if m5_latest > m5_ma5:
+                score += 0.15
+            else:
+                score -= 0.1
+
+            # 5min MA5 > MA20 = micro trend aligned
+            if m5_ma5 > m5_ma20:
+                score += 0.1
+
+        # Check 15min: MACD trend
+        if len(m15_bars) >= 26:
+            m15_closes = np.array([b["close"] for b in m15_bars[:30]])
+            if len(m15_closes) >= 26:
+                ema12 = _ema(m15_closes[::-1], 12)  # reverse to chronological
+                ema26 = _ema(m15_closes[::-1], 26)
+                macd_line = ema12[-1] - ema26[-1]
+                signal_line = np.mean((ema12 - ema26)[-9:])
+
+                # MACD bullish on 15min = medium-term confirmation
+                if macd_line > signal_line:
+                    score += 0.15
+                elif macd_line < 0:
+                    score -= 0.15  # MACD negative = caution
+
+        return max(0.3, min(score, 1.5))  # clamp between 0.3x and 1.5x
+
+    except Exception:
+        return 1.0  # neutral on any error
 
 
 def scan_signals(symbol: str, name: str, klines: list) -> List[Dict[str, Any]]:
@@ -260,9 +324,22 @@ def push_bark(title: str, body: str, group: str = "signal") -> bool:
         return False
 
 
+def _is_market_hours() -> bool:
+    """Check if current time is within A-share trading hours (Mon-Fri 9:00-15:00 Beijing)."""
+    from datetime import time as _time
+    now = datetime.now(timezone.utc)
+    bj_hour = (now.hour + 8) % 24
+    bj_minute = now.minute
+    bj_time = _time(bj_hour, bj_minute)
+    return now.weekday() < 5 and _time(9, 0) <= bj_time <= _time(15, 5)
+
+
 @celery_app.task(queue="market")
 def run_signal_scanner():
-    """扫描所有关注标的的买入信号，通过 Bark 推送 + 数据库记录。"""
+    """扫描所有关注标的的买入信号，通过 Bark 推送 + 自动交易 + 数据库记录。"""
+    if not _is_market_hours():
+        return  # skip outside trading hours
+
     logger.info(f"信号扫描开始: {datetime.now(timezone.utc)}")
 
     db = SyncSessionLocal()
@@ -280,36 +357,49 @@ def run_signal_scanner():
             logger.info("无关注标的，跳过信号扫描")
             return
 
+        # Bulk-load all klines in one query (much faster than N separate queries)
+        symbol_list = [s.symbol for s in symbols]
+        all_rows = db.execute(
+            select(KLine)
+            .where(KLine.symbol.in_(symbol_list), KLine.interval == "1d")
+            .order_by(KLine.symbol.asc(), KLine.timestamp.asc())
+        ).scalars().all()
+
+        # Group klines by symbol
+        klines_by_symbol = defaultdict(list)
+        for r in all_rows:
+            klines_by_symbol[r.symbol].append({
+                "timestamp": int(r.timestamp.timestamp()),
+                "open": r.open, "high": r.high, "low": r.low,
+                "close": r.close, "volume": r.volume,
+            })
+
         all_signals: List[Dict[str, Any]] = []
         for sym in symbols:
-            rows = db.execute(
-                select(KLine)
-                .where(KLine.symbol == sym.symbol, KLine.interval == "1d")
-                .order_by(KLine.timestamp.asc())
-            ).scalars().all()
-
-            if len(rows) < 60:
+            klines = klines_by_symbol.get(sym.symbol, [])
+            if len(klines) < 60:
                 continue
-
-            klines = [
-                {
-                    "timestamp": int(r.timestamp.timestamp()),
-                    "open": r.open, "high": r.high, "low": r.low,
-                    "close": r.close, "volume": r.volume,
-                }
-                for r in rows
-            ]
 
             signals = scan_signals(sym.symbol, sym.name, klines)
             if signals:
                 price = klines[-1]["close"]
                 level, score, summary = _assess_signals(signals, price, sym.name)
+
+                # Multi-timeframe confirmation (5min + 15min trend alignment)
+                mtf_mult = confirm_multi_timeframe(sym.symbol, db)
+                adjusted_score = int(score * mtf_mult)
+                if mtf_mult >= 1.1 and level == "BUY":
+                    level = "STRONG_BUY"  # upgrade: daily signal confirmed by short-term
+                elif mtf_mult <= 0.7 and level == "STRONG_BUY":
+                    level = "BUY"  # downgrade: daily signal not confirmed
+
                 all_signals.append({
                     "symbol": sym.symbol,
                     "name": sym.name,
                     "price": price,
                     "level": level,
-                    "score": score,
+                    "score": adjusted_score,
+                    "mtf_mult": round(mtf_mult, 2),
                     "summary": summary,
                     "signals": signals,
                 })
@@ -376,6 +466,23 @@ def run_signal_scanner():
                 db.add(notif)
 
         db.commit()
+
+        # ── 自动交易引擎 ──
+        if settings.AUTO_TRADE_ENABLED:
+            try:
+                from app.services.auto_trade import execute_signal_batch_sync
+                auto_results = execute_signal_batch_sync(db, user_id=1, stock_signals=all_signals)
+                auto_count = sum(1 for r in auto_results if r["auto_trade"]["executed"])
+                if auto_count > 0:
+                    logger.info(f"自动交易完成: {auto_count} 笔")
+                    for r in auto_results:
+                        if r["auto_trade"]["executed"]:
+                            at = r["auto_trade"]
+                            mode = "[DRY-RUN]" if at.get("dry_run") else "[LIVE]"
+                            logger.info(f"  {mode} {r['name']} {at['reason']}")
+            except Exception as e:
+                logger.error(f"自动交易异常: {e}", exc_info=True)
+
         logger.info(f"信号扫描完成: {len(all_signals)} 个信号 (强买{len(strong_buys)} 买入{len(buys)} 关注{len(watches)})")
 
     except Exception as e:

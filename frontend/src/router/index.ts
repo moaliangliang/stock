@@ -67,6 +67,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '投资决策', icon: 'Opportunity' },
       },
       {
+        path: 'dca',
+        name: 'DcaBacktest',
+        component: () => import('@/views/DcaBacktest.vue'),
+        meta: { title: '定投回测', icon: 'TrendCharts' },
+      },
+      {
         path: 'reports',
         name: 'Reports',
         component: () => import('@/views/Report.vue'),

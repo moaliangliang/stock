@@ -49,16 +49,16 @@ celery_app.conf.update(
             "schedule": crontab(minute="*/5", hour="9-15", day_of_week="1-5"),
             "options": {"queue": "market"},
         },
-        # 买入信号扫描（每3分钟，仅工作时间执行；任务内部判断市场时段）
+        # 买入信号扫描（每5分钟兜底扫描；主力由 WebSocket broadcast 价格驱动实时触发）
         "signal-scanner": {
             "task": "app.tasks.signal_scanner.run_signal_scanner",
-            "schedule": crontab(minute="*/3", hour="9-15", day_of_week="1-5"),
+            "schedule": 300.0,
             "options": {"queue": "market"},
         },
-        # 投资决策生成（每5分钟，仅市场时段内执行）
+        # 投资决策生成（每60秒）
         "investment-decision-generate": {
             "task": "app.tasks.decision.generate_investment_decisions",
-            "schedule": 300.0,  # 5分钟
+            "schedule": 60.0,
             "options": {"queue": "strategy"},
         },
         # 决策结果追踪（每30分钟）
@@ -72,6 +72,12 @@ celery_app.conf.update(
             "task": "app.tasks.market.cleanup_old_data",
             "schedule": 86400.0,  # 24小时
             "options": {"queue": "maintenance"},
+        },
+        # MA均线交叉监控 (工作日15:30收盘后)
+        "ma-cross-monitor": {
+            "task": "app.tasks.ma_monitor.run_ma_monitor",
+            "schedule": crontab(minute="30", hour="15", day_of_week="1-5"),
+            "options": {"queue": "market"},
         },
     },
 )

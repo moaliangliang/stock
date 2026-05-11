@@ -15,7 +15,7 @@ from app.utils.logger import setup_logger
 from app.utils.token_usage import get_stats as get_token_usage_stats
 
 # 导入路由
-from app.api.v1.endpoints import auth, market, strategy, backtest, trade, risk, data, notification, alert, decision, report
+from app.api.v1.endpoints import auth, market, strategy, backtest, trade, risk, data, notification, alert, decision, report, dca
 from app.api.v1 import ws as ws_router
 
 
@@ -99,6 +99,7 @@ app.include_router(notification.router, prefix="/api/v1")
 app.include_router(alert.router, prefix="/api/v1")
 app.include_router(decision.router, prefix="/api/v1")
 app.include_router(report.router, prefix="/api/v1")
+app.include_router(dca.router, prefix="/api/v1")
 
 
 @app.get("/api/v1/health")
