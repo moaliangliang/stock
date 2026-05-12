@@ -22,8 +22,9 @@ async def login(
     password: str = Form(...),
     db: AsyncSession = Depends(get_db),
 ):
-    """用户登录"""
-    user = await authenticate_user(db, username, password)
+    """用户登录（form-encoded，经 Pydantic 校验）"""
+    req = LoginRequest(username=username, password=password)
+    user = await authenticate_user(db, req.username, req.password)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户名或密码错误")
     token = create_access_token(user.id)

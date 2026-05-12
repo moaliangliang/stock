@@ -19,7 +19,7 @@ class StrategyCreate(BaseModel):
     initial_capital: float = 10000.0
     max_position_ratio: int = 30
     is_custom_code: bool = False
-    custom_code: Optional[str] = None
+    custom_code: Optional[str] = Field(None, max_length=65536)
     schedule_config: Dict[str, Any] = {}
 
 
@@ -34,7 +34,7 @@ class StrategyUpdate(BaseModel):
     max_position_ratio: Optional[int] = None
     status: Optional[StrategyStatus] = None
     is_custom_code: Optional[bool] = None
-    custom_code: Optional[str] = None
+    custom_code: Optional[str] = Field(None, max_length=65536)
     schedule_config: Optional[Dict[str, Any]] = None
 
 

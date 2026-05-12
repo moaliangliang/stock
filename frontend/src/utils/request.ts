@@ -7,7 +7,10 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios'
 import { ElMessage } from 'element-plus'
 import router from '@/router'
-import { getToken, clearToken } from '@/utils/token'
+import { getToken } from '@/utils/token'
+
+let last401Time = 0
+const DEBOUNCE_401_MS = 3000
 
 const request = axios.create({
   baseURL: '/api/v1',
@@ -40,10 +43,15 @@ request.interceptors.response.use(
 
     switch (status) {
       case 401:
-        clearToken()
-        sessionStorage.removeItem('user')
-        router.push('/login')
-        ElMessage.error('登录已过期，请重新登录')
+        // Debounce: multiple concurrent 401s only trigger one redirect
+        if (Date.now() - last401Time > DEBOUNCE_401_MS) {
+          last401Time = Date.now()
+          import('@/store').then(({ useAuthStore }) => {
+            useAuthStore().logout()
+            router.push('/login')
+            ElMessage.error('登录已过期，请重新登录')
+          })
+        }
         break
       case 403:
         ElMessage.error('权限不足')

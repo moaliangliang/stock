@@ -39,6 +39,7 @@ class User(Base):
     strategies = relationship("Strategy", back_populates="user", cascade="all, delete-orphan")
     positions = relationship("Position", back_populates="user", cascade="all, delete-orphan")
     orders = relationship("Order", back_populates="user", cascade="all, delete-orphan")
+    price_alerts = relationship("PriceAlert", back_populates="user", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<User(id={self.id}, username={self.username}, role={self.role})>"

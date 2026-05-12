@@ -65,7 +65,12 @@ class RateLimiterMiddleware:
             pipe.execute()
 
         except Exception:
-            # Redis unavailable — fall through (fail open, don't block traffic)
-            pass
+            # Redis unavailable — fail closed: deny traffic to prevent abuse
+            response = JSONResponse(
+                status_code=503,
+                content={"code": 503, "message": "服务暂时不可用，请稍后再试", "data": None},
+            )
+            await response(scope, receive, send)
+            return
 
         await self.app(scope, receive, send)

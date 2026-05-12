@@ -82,11 +82,12 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    """全局未捕获异常处理 — 返回 500"""
+    """全局未捕获异常处理 — 返回 500（生产环境不泄露内部错误详情）"""
     logger.error(f"未捕获异常: {exc} | 路径: {request.url.path}")
+    detail = str(exc) if settings.DEBUG else "服务器内部错误，请稍后再试"
     return JSONResponse(
         status_code=500,
-        content={"code": 500, "message": f"服务器内部错误: {str(exc)}", "data": None},
+        content={"code": 500, "message": detail, "data": None},
     )
 
 

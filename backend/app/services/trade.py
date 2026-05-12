@@ -422,17 +422,22 @@ async def create_or_update_position(
     quantity: float,
     cost_price: float,
     leverage: float = 1.0,
+    position: PositionModel | None = None,
 ) -> PositionModel:
-    """手动录入或更新持仓。存在则覆盖 quantity/cost_price，不存在则新建。"""
-    result = await db.execute(
-        select(PositionModel).where(
-            and_(
-                PositionModel.user_id == user_id,
-                PositionModel.symbol == symbol,
+    """手动录入或更新持仓。存在则覆盖 quantity/cost_price，不存在则新建。
+
+    Pass *position* to skip the existence lookup (callers that have already fetched it).
+    """
+    if position is None:
+        result = await db.execute(
+            select(PositionModel).where(
+                and_(
+                    PositionModel.user_id == user_id,
+                    PositionModel.symbol == symbol,
+                )
             )
         )
-    )
-    position = result.scalar_one_or_none()
+        position = result.scalar_one_or_none()
 
     market_value = round(quantity * cost_price * leverage, 2)
 
@@ -682,6 +687,7 @@ async def sync_positions_from_eastmoney(
 
         await create_or_update_position(
             db, user_id, symbol, quantity, cost_price,
+            position=existing,
         )
 
         if existing:

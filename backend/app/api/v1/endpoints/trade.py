@@ -112,8 +112,17 @@ async def import_positions(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="仅支持 .xlsx / .xls 格式的 Excel 文件",
         )
+    # 10 MB limit — prevent zip bomb and memory exhaustion
+    MAX_EXCEL_BYTES = 10 * 1024 * 1024
     try:
         content = await file.read()
+        if len(content) > MAX_EXCEL_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"文件大小超过限制 ({MAX_EXCEL_BYTES // (1024*1024)} MB)",
+            )
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
