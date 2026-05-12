@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from sqlalchemy import and_, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.strategy import (
     Strategy,
@@ -66,7 +67,11 @@ async def get_strategy(db: AsyncSession, strategy_id: int) -> Optional[Strategy]
     Returns:
         The Strategy object if found, None otherwise.
     """
-    result = await db.execute(select(Strategy).where(Strategy.id == strategy_id))
+    result = await db.execute(
+        select(Strategy)
+        .where(Strategy.id == strategy_id)
+        .options(selectinload(Strategy.user))
+    )
     return result.scalar_one_or_none()
 
 

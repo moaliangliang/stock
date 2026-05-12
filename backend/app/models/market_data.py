@@ -10,6 +10,9 @@ from app.core.database import Base
 class SymbolInfo(Base):
     """标的物信息表"""
     __tablename__ = "symbol_info"
+    __table_args__ = (
+        Index("idx_symbol_info_watched", "is_watched"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     symbol = Column(String(20), unique=True, index=True, nullable=False, comment="标的代码")

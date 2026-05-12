@@ -322,10 +322,13 @@ async function runBacktest() {
   }
 }
 
+let dcaChart: any = null
+
 async function renderChart() {
   if (!chartRef.value || !data.value?.monthly_series) return
   const echarts = (await import('echarts')).default
-  const chart = echarts.init(chartRef.value)
+  if (dcaChart) dcaChart.dispose()
+  dcaChart = echarts.init(chartRef.value)
 
   const series = data.value.monthly_series
   const labels = series.map((s: any) => s.label)
@@ -350,7 +353,7 @@ async function renderChart() {
     areaStyle: { opacity: 0.15, color: '#ff4d4f' },
   })
 
-  chart.setOption({
+  dcaChart.setOption({
     tooltip: {
       trigger: 'axis',
       valueFormatter: (val: number) => val != null ? `¥${val.toLocaleString()}` : '-',

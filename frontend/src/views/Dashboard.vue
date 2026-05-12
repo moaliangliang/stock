@@ -132,7 +132,8 @@ async function loadDashboard() {
         tokenStats.callCount = skills.call_count || 0
       }
     }
-  } catch (err) {
+  } catch (err: any) {
+    ElMessage.error('数据加载失败，请刷新重试')
     console.error('Dashboard data load failed', err)
   }
 }

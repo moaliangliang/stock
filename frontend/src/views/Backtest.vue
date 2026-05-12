@@ -134,18 +134,21 @@ async function runBacktest() {
     ElMessage.success('回测完成')
     await nextTick()
     renderEquityChart()
-  } catch (err) {
-    console.error(err)
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || err?.message || '回测失败')
   } finally {
     running.value = false
   }
 }
 
+let equityChart: any = null
+
 async function renderEquityChart() {
   if (!equityChartRef.value || !result.value?.equity_curve) return
   const echarts = (await import('echarts')).default
-  const chart = echarts.init(equityChartRef.value)
-  chart.setOption({
+  if (equityChart) equityChart.dispose()
+  equityChart = echarts.init(equityChartRef.value)
+  equityChart.setOption({
     tooltip: { trigger: 'axis' },
     grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
     xAxis: { type: 'category', data: result.value.equity_curve.map((p: any) => p[0]?.toString().slice(5, 16) || ''), boundaryGap: false },

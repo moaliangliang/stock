@@ -336,6 +336,8 @@ function editStrategy(row: any) {
 }
 
 async function saveStrategy() {
+  if (!form.name.trim()) { ElMessage.warning('请输入策略名称'); return }
+  if (!form.type) { ElMessage.warning('请选择策略类型'); return }
   saving.value = true
   try {
     const data = { ...form, params: JSON.parse(form.params || '{}') }
@@ -348,8 +350,8 @@ async function saveStrategy() {
     }
     dialogVisible.value = false
     await loadStrategies()
-  } catch (err) {
-    console.error(err)
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || err?.message || '保存失败')
   } finally {
     saving.value = false
   }

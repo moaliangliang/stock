@@ -438,13 +438,19 @@ async function loadOrders() {
 }
 
 async function submitOrder() {
+  if (!orderForm.symbol) { ElMessage.warning('请选择交易标的'); return }
+  if (!orderForm.side) { ElMessage.warning('请选择买卖方向'); return }
+  if (orderForm.type === 'limit' && (!orderForm.price || orderForm.price <= 0)) {
+    ElMessage.warning('请输入有效价格'); return
+  }
+  if (!orderForm.quantity || orderForm.quantity <= 0) { ElMessage.warning('请输入有效数量'); return }
   submitting.value = true
   try {
     await tradeApi.createOrder(orderForm as any)
     ElMessage.success('订单提交成功')
     await Promise.all([loadPositions(), loadOrders()])
-  } catch (err) { console.error('Operation failed:', err); 
-    // error handled by interceptor
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || err?.message || '提交失败')
   } finally { submitting.value = false }
 }
 
@@ -453,7 +459,9 @@ async function cancelOrder(id: number) {
     await tradeApi.cancelOrder(id)
     ElMessage.success('撤单成功')
     await loadOrders()
-  } catch (err) { console.error('Operation failed:', err); }
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || err?.message || '撤单失败')
+  }
 }
 
 onMounted(async () => {

@@ -33,6 +33,9 @@ class OutcomeType(str, enum.Enum):
 class InvestmentDecision(Base):
     """投资决策建议表"""
     __tablename__ = "investment_decisions"
+    __table_args__ = (
+        Index("idx_investment_decisions_symbol", "symbol"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, comment="用户ID")

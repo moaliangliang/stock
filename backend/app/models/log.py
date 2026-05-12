@@ -2,7 +2,7 @@
 日志监控模型 - 系统日志、交易日志
 """
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, Float, Text, DateTime, Enum as SAEnum, Index
+from sqlalchemy import Column, Integer, String, Float, Text, DateTime, ForeignKey, Enum as SAEnum, Index
 import enum
 
 from app.core.database import Base
@@ -55,9 +55,9 @@ class TradeLog(Base):
     )
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    user_id = Column(Integer, nullable=False, comment="用户ID")
-    order_id = Column(Integer, nullable=True, comment="关联订单ID")
-    strategy_id = Column(Integer, nullable=True, comment="关联策略ID")
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, comment="用户ID")
+    order_id = Column(Integer, ForeignKey("orders.id", ondelete="SET NULL"), nullable=True, comment="关联订单ID")
+    strategy_id = Column(Integer, ForeignKey("strategies.id", ondelete="SET NULL"), nullable=True, comment="关联策略ID")
     symbol = Column(String(20), nullable=False, comment="标的代码")
     action = Column(String(20), nullable=False, comment="操作: open/close/partial/cancel")
     side = Column(String(10), nullable=False, comment="方向: buy/sell")

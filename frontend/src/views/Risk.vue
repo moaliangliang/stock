@@ -188,7 +188,9 @@ async function saveRule() {
     }
     dialogVisible.value = false
     loadRules()
-  } catch (err) { console.error('Operation failed:', err); } finally { saving.value = false }
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || err?.message || '保存失败')
+  } finally { saving.value = false }
 }
 
 async function deleteRule(id: number) {
@@ -196,7 +198,9 @@ async function deleteRule(id: number) {
     await riskApi.deleteRule(id)
     ElMessage.success('规则已删除')
     loadRules()
-  } catch (err) { console.error('Operation failed:', err); }
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || err?.message || '删除失败')
+  }
 }
 
 onMounted(() => {

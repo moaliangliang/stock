@@ -631,8 +631,8 @@ async function loadSummary() {
     if (res.code === 200) {
       Object.assign(summary, res.data)
     }
-  } catch (err) { console.error('Operation failed:', err); 
-    // ignore
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || err?.message || '操作失败')
   }
 }
 
@@ -647,8 +647,8 @@ async function loadOutcomeSummary() {
         outcomeMap.value[o.decision_id] = o
       }
     }
-  } catch (err) { console.error('Operation failed:', err); 
-    // ignore
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || err?.message || '操作失败')
   }
 }
 
@@ -736,8 +736,8 @@ async function loadSymbolNames() {
         }
       }
     }
-  } catch (err) { console.error('Operation failed:', err); 
-    // ignore
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || err?.message || '操作失败')
   }
 }
 
