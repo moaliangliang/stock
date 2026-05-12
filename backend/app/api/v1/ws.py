@@ -18,7 +18,9 @@ AsyncSessionLocal = async_session_factory
 
 router = APIRouter()
 
-# Price-driven signal scanning: track previous prices to detect changes
+# Price-driven signal scanning: track previous prices to detect changes.
+# NOTE: process-local dict — correct for single-worker deployments.
+# If scaling to multi-worker, migrate to Redis hash (`prices:{symbol}`) for shared state.
 _prev_prices: Dict[str, float] = {}
 
 

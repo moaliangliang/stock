@@ -373,6 +373,7 @@ def simulate_lumpsum(
     klines: List[Dict],
     total_amount: float,
     start_date: date,
+    end_date: Optional[date] = None,
 ) -> Optional[Dict]:
     """一次性投入并持有，与定投对比。"""
     if not klines:
@@ -385,6 +386,8 @@ def simulate_lumpsum(
 
     for k in klines:
         d = _date_from_kline(k)
+        if end_date and d > end_date:
+            break
         if first_date is None and d >= start_date:
             first_date = d
             first_price = k["close"]
@@ -487,7 +490,7 @@ def run_dca_backtest(
 
         # 一次性投入对比
         total_invested = metrics["total_invested"]
-        ls = simulate_lumpsum(klines, total_invested, sd)
+        ls = simulate_lumpsum(klines, total_invested, sd, ed)
         if ls:
             ls["name"] = name
             lumpsum_results[symbol] = ls

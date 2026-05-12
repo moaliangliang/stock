@@ -126,6 +126,12 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     LOG_DIR: str = "logs"
 
+    # 报告与监控文件路径
+    REPORT_DIR: str = "/root/.openclaw/workspace/mx_data/output"
+    ALERT_LOG_PATH: str = "/root/workspace/stock/buy_signal_alerts.log"
+    BUY_SIGNAL_STATE_PATH: str = "/root/workspace/stock/buy_signal_state.json"
+    MA_MONITOR_STATE_PATH: str = ""
+
     class Config:
         env_file = ".env"
         case_sensitive = True

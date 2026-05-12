@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 BARK_URL = "https://api.day.app/push"
 
 # 状态文件路径(记录每个指数+策略的上一状态)
-STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "ma_monitor_state.json")
+STATE_FILE = settings.MA_MONITOR_STATE_PATH or os.path.join(os.path.dirname(__file__), "..", "..", "ma_monitor_state.json")
 
 # 监控配置: (symbol, name, short_ma, long_ma)
 WATCHLIST = [

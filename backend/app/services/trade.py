@@ -524,8 +524,12 @@ async def _batch_refresh_positions(db: AsyncSession, positions: list) -> None:
                 abs_change = price - pc
             else:
                 chg = float(ticker.change_24h)
-                pc = price / (1 + chg / 100) if chg != -100 else 0
-                abs_change = pc * chg / 100
+                if chg != -100:
+                    pc = price / (1 + chg / 100)
+                    abs_change = pc * chg / 100
+                else:
+                    pc = price
+                    abs_change = 0
             pos.day_pnl = round(pos.quantity * abs_change, 2)
             if ticker.change_24h is not None:
                 pos.day_pnl_ratio = round(float(ticker.change_24h), 2)
@@ -567,8 +571,12 @@ async def _refresh_position_price(db: AsyncSession, position: PositionModel) -> 
                         abs_change = price - pc
                     else:
                         chg = float(ticker.change_24h)
-                        pc = price / (1 + chg / 100) if chg != -100 else 0
-                        abs_change = pc * chg / 100
+                        if chg != -100:
+                            pc = price / (1 + chg / 100)
+                            abs_change = pc * chg / 100
+                        else:
+                            pc = price
+                            abs_change = 0
                     position.day_pnl = round(position.quantity * abs_change, 2)
                     if ticker.change_24h is not None:
                         position.day_pnl_ratio = round(float(ticker.change_24h), 2)

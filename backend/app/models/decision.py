@@ -71,6 +71,6 @@ class DecisionOutcome(Base):
     hit_target = Column(Boolean, default=False, comment="是否触及目标价")
     hit_stop = Column(Boolean, default=False, comment="是否触及止损价")
     pnl_pct = Column(Float, nullable=True, comment="实际盈亏百分比")
-    outcome = Column(SAEnum(OutcomeType), nullable=True, comment="结果: win/loss/breakeven")
+    outcome = Column(SAEnum(OutcomeType), default=OutcomeType.BREAKEVEN, nullable=False, comment="结果: win/loss/breakeven")
     checked_at = Column(DateTime(timezone=True), nullable=True, comment="检查时间")
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

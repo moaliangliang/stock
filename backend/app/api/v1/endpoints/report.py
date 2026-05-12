@@ -12,16 +12,17 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from app.core.config import settings
 from app.core.deps import get_current_user
 from app.models.user import User
 from app.schemas.common import Response
 
 router = APIRouter(prefix="/reports", tags=["分析报告"])
 
-# 报告目录
-REPORT_DIR = Path("/root/.openclaw/workspace/mx_data/output")
-ALERT_LOG = Path("/root/workspace/stock/buy_signal_alerts.log")
-STATE_FILE = Path("/root/workspace/stock/buy_signal_state.json")
+# 报告目录（可通过环境变量覆盖）
+REPORT_DIR = Path(settings.REPORT_DIR)
+ALERT_LOG = Path(settings.ALERT_LOG_PATH)
+STATE_FILE = Path(settings.BUY_SIGNAL_STATE_PATH)
 
 
 class ReportItem(BaseModel):

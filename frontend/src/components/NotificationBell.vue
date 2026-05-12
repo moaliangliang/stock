@@ -40,7 +40,7 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElNotification } from 'element-plus'
 import { notificationApi } from '@/api/notification'
-import { getToken } from '@/utils/token'
+import { useWebSocket } from '@/composables/useWebSocket'
 
 const unreadCount = ref(0)
 const list = ref<any[]>([])
@@ -108,94 +108,30 @@ async function handleMarkAllRead() {
   } catch (err) { console.error('Failed to mark all read:', err) }
 }
 
-// WebSocket：实时接收决策强信号推送 (with reconnect + heartbeat)
-let ws: WebSocket | null = null
-let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-let heartbeatTimer: ReturnType<typeof setInterval> | null = null
-let reconnectAttempts = 0
-const MAX_RECONNECT_DELAY = 30000
-
-function connectWS() {
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return
-
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  const token = getToken()
-  const url = `${proto}://${location.host}/api/v1/ws/tickers`
-  try {
-    ws = new WebSocket(url)
-    ws.onopen = () => {
-      // Send auth token as first message (never in URL)
-      if (token && ws && ws.readyState === WebSocket.OPEN) {
-        try { ws.send(JSON.stringify({ type: 'auth', token })) } catch { /* auth failed */ }
-      }
-      reconnectAttempts = 0
-      if (heartbeatTimer) clearInterval(heartbeatTimer)
-      heartbeatTimer = setInterval(() => {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          try { ws.send('ping') } catch { /* heartbeat lost — socket will trigger onclose */ }
-        }
-      }, 30000)
+// WebSocket via shared composable (was inline; now deduplicated)
+useWebSocket({
+  url: `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/v1/ws/tickers`,
+  onMessage: (msg: any) => {
+    if (msg.type === 'decision_alert') {
+      const d = msg.data
+      ElNotification({
+        title: d.label + ' - ' + d.symbol,
+        message: d.summary,
+        type: d.recommendation === 'strong_buy' ? 'success' : 'error',
+        duration: 8000,
+      })
+      loadUnreadCount()
     }
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data)
-        if (msg.type === 'decision_alert') {
-          const d = msg.data
-          ElNotification({
-            title: d.label + ' - ' + d.symbol,
-            message: d.summary,
-            type: d.recommendation === 'strong_buy' ? 'success' : 'error',
-            duration: 8000,
-          })
-          loadUnreadCount()
-        }
-      } catch (err) { console.error('WS message parse error:', err) }
-    }
-    ws.onclose = () => {
-      if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null }
-      scheduleReconnect()
-    }
-    ws.onerror = (err) => {
-      console.error('WebSocket error:', err)
-      ws?.close()
-    }
-  } catch (err) {
-    console.error('WebSocket connect failed:', err)
-    scheduleReconnect()
-  }
-}
-
-function scheduleReconnect() {
-  if (reconnectTimer) return
-  const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), MAX_RECONNECT_DELAY)
-  reconnectAttempts++
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null
-    connectWS()
-  }, delay)
-}
-
-function disconnectWS() {
-  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
-  if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null }
-  reconnectAttempts = MAX_RECONNECT_DELAY  // prevent reconnect after intentional close
-  if (ws) {
-    ws.onclose = null
-    ws.onerror = null
-    ws.close()
-    ws = null
-  }
-}
+  },
+})
 
 onMounted(() => {
   loadUnreadCount()
   timer = setInterval(loadUnreadCount, 30000)
-  connectWS()
 })
 
 onUnmounted(() => {
   if (timer) clearInterval(timer)
-  disconnectWS()
 })
 </script>
 
