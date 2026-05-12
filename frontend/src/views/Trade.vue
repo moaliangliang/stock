@@ -48,51 +48,104 @@
       </el-col>
 
       <el-col :span="16">
+        <!-- 汇总卡片 -->
+        <el-row :gutter="12" style="margin-bottom: 12px">
+          <el-col :span="6">
+            <div class="summary-card">
+              <div class="summary-label">总市值</div>
+              <div class="summary-value">{{ totalMarketValue.toLocaleString() }}</div>
+            </div>
+          </el-col>
+          <el-col :span="6">
+            <div class="summary-card">
+              <div class="summary-label">总成本</div>
+              <div class="summary-value">{{ totalCost.toLocaleString() }}</div>
+            </div>
+          </el-col>
+          <el-col :span="6">
+            <div class="summary-card">
+              <div class="summary-label">浮动盈亏</div>
+              <div class="summary-value" :class="totalPnl >= 0 ? 'price-up' : 'price-down'">
+                {{ totalPnl.toLocaleString() }}
+                <span style="font-size:12px;margin-left:2px">{{ totalPnlRatio >= 0 ? '+' : '' }}{{ totalPnlRatio }}%</span>
+              </div>
+            </div>
+          </el-col>
+          <el-col :span="6">
+            <div class="summary-card">
+              <div class="summary-label">当日盈亏</div>
+              <div class="summary-value" :class="totalDayPnl >= 0 ? 'price-up' : 'price-down'">
+                {{ totalDayPnl.toLocaleString() }}
+                <span style="font-size:12px;margin-left:2px">{{ totalDayPnlRatio >= 0 ? '+' : '' }}{{ totalDayPnlRatio }}%</span>
+              </div>
+            </div>
+          </el-col>
+        </el-row>
+
         <el-card shadow="hover" style="margin-bottom: 16px">
           <template #header>
             <div style="display:flex;justify-content:space-between;align-items:center">
               <span>📦 当前持仓</span>
               <div>
+                <span v-if="lastSyncTime" style="font-size:12px;color:#999;margin-right:8px">
+                  上次同步: {{ lastSyncTime }}
+                </span>
+                <el-button size="small" type="success" :loading="syncLoading" @click="syncPositions">同步持仓</el-button>
                 <el-button size="small" type="primary" @click="showPosDialog = true">手动录入</el-button>
                 <el-button size="small" @click="showImportDialog = true">Excel 导入</el-button>
               </div>
             </div>
           </template>
-          <el-table :data="positions" stripe size="small" v-loading="posLoading" show-summary :summary-method="positionSummary" :default-sort="{prop: 'market_value', order: 'descending'}">
-            <el-table-column prop="symbol" label="标的" width="130" sortable>
+          <el-table :data="positions" stripe size="small" v-loading="posLoading" :default-sort="{prop: 'market_value', order: 'descending'}">
+            <el-table-column prop="symbol" label="证券名称" width="125" sortable>
               <template #default="{ row }">
-                <div>{{ getSymbolName(row.symbol) }}</div>
-                <div style="font-size:11px;color:#999">({{ row.symbol }})</div>
+                <div style="font-weight:500">{{ getSymbolName(row.symbol) }}</div>
+                <div style="font-size:11px;color:#999">{{ row.symbol }}</div>
               </template>
             </el-table-column>
-            <el-table-column prop="quantity" label="持仓" width="80" sortable />
-            <el-table-column prop="available_quantity" label="可用" width="80" sortable />
-            <el-table-column prop="cost_price" label="成本价" width="90" sortable />
-            <el-table-column prop="current_price" label="现价" width="90" sortable />
-            <el-table-column prop="market_value" label="市值" width="100" sortable>
+            <el-table-column prop="quantity" label="持仓/可用" width="95" sortable>
               <template #default="{ row }">
-                {{ (row.market_value || 0).toLocaleString() }}
+                <div>{{ row.quantity }}</div>
+                <div style="font-size:11px;color:#999">{{ row.available_quantity ?? row.quantity }}</div>
               </template>
             </el-table-column>
-            <el-table-column prop="pnl" label="盈亏" width="100" sortable>
+            <el-table-column prop="cost_price" label="成本" width="80" sortable>
               <template #default="{ row }">
-                <span :class="(row.pnl || 0) >= 0 ? 'price-up' : 'price-down'">
-                  {{ (row.pnl || 0).toLocaleString() }}
+                {{ row.cost_price < 0 ? '已回本' : (row.cost_price || 0).toFixed(3) }}
+              </template>
+            </el-table-column>
+            <el-table-column prop="current_price" label="现价" width="80" sortable>
+              <template #default="{ row }">
+                <span :class="(row.day_pnl_ratio || 0) >= 0 ? 'price-up' : 'price-down'">
+                  {{ (row.current_price || 0).toFixed(3) }}
                 </span>
               </template>
             </el-table-column>
-            <el-table-column prop="pnl_ratio" label="盈亏比" width="80" sortable>
+            <el-table-column prop="market_value" label="市值" width="110" sortable>
               <template #default="{ row }">
-                <span :class="(row.pnl_ratio || 0) >= 0 ? 'price-up' : 'price-down'">
-                  {{ row.pnl_ratio?.toFixed(2) }}%
-                </span>
+                <div>{{ (row.market_value || 0).toLocaleString() }}</div>
+                <div style="font-size:11px;color:#999">{{ positionRatio(row) }}%</div>
               </template>
             </el-table-column>
-            <el-table-column prop="day_pnl" label="日盈亏" width="100" sortable>
+            <el-table-column prop="pnl" label="浮动盈亏" width="130" sortable>
               <template #default="{ row }">
-                <span :class="(row.day_pnl || 0) >= 0 ? 'price-up' : 'price-down'">
-                  {{ (row.day_pnl || 0).toLocaleString() }}
-                </span>
+                <div :class="(row.pnl || 0) >= 0 ? 'price-up' : 'price-down'">
+                  {{ (row.pnl || 0) >= 0 ? '+' : '' }}{{ (row.pnl || 0).toLocaleString() }}
+                </div>
+                <div v-if="row.cost_price < 0" style="font-size:11px;color:#e6a23c">已回本</div>
+                <div v-else :class="(row.pnl_ratio || 0) >= 0 ? 'price-up' : 'price-down'" style="font-size:11px">
+                  {{ (row.pnl_ratio || 0) >= 0 ? '+' : '' }}{{ (row.pnl_ratio || 0).toFixed(2) }}%
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column prop="day_pnl" label="当日盈亏" width="120" sortable>
+              <template #default="{ row }">
+                <div :class="(row.day_pnl || 0) >= 0 ? 'price-up' : 'price-down'">
+                  {{ (row.day_pnl || 0) >= 0 ? '+' : '' }}{{ (row.day_pnl || 0).toLocaleString() }}
+                </div>
+                <div :class="(row.day_pnl_ratio || 0) >= 0 ? 'price-up' : 'price-down'" style="font-size:11px">
+                  {{ (row.day_pnl_ratio || 0) >= 0 ? '+' : '' }}{{ (row.day_pnl_ratio || 0).toFixed(2) }}%
+                </div>
               </template>
             </el-table-column>
           </el-table>
@@ -150,7 +203,7 @@
           <el-input-number v-model="posForm.quantity" :min="1" :step="100" style="width:100%" />
         </el-form-item>
         <el-form-item label="成本价">
-          <el-input-number v-model="posForm.cost_price" :min="0.01" :step="0.01" :precision="2" style="width:100%" />
+          <el-input-number v-model="posForm.cost_price" :step="0.01" :precision="2" style="width:100%" />
         </el-form-item>
         <el-form-item label="杠杆">
           <el-input-number v-model="posForm.leverage" :min="1" :step="1" style="width:100%" />
@@ -202,16 +255,52 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { tradeApi, marketApi } from '@/api'
 
 const submitting = ref(false)
 const posLoading = ref(false)
 const orderLoading = ref(false)
+const syncLoading = ref(false)
+const lastSyncTime = ref('')
 const symbols = ref<any[]>([])
 const positions = ref<any[]>([])
 const orders = ref<any[]>([])
+
+// ── 汇总计算 ────────────────────────────────────────
+const totalMarketValue = computed(() => {
+  return positions.value.reduce((s, p) => s + (Number(p.market_value) || 0), 0)
+})
+const totalCost = computed(() => {
+  return positions.value.reduce((s, p) => s + (Number(p.cost_price) || 0) * (Number(p.quantity) || 0), 0)
+})
+const totalPnl = computed(() => {
+  return positions.value.reduce((s, p) => s + (Number(p.pnl) || 0), 0)
+})
+const totalPnlRatio = computed(() => {
+  const cost = totalCost.value
+  if (cost <= 0) return '0.00'
+  return ((totalPnl.value / cost) * 100).toFixed(2)
+})
+const totalDayPnl = computed(() => {
+  return positions.value.reduce((s, p) => s + (Number(p.day_pnl) || 0), 0)
+})
+const totalDayPnlRatio = computed(() => {
+  const mv = totalMarketValue.value
+  if (mv <= 0) return '0.00'
+  // day_pnl_ratio is already per-position; aggregate ratio = sum(day_pnl) / sum(market_value)
+  // but market_value already reflects current price. Use prev_day_mv ≈ mv - day_pnl
+  const prevMv = mv - totalDayPnl.value
+  if (prevMv <= 0) return '0.00'
+  return ((totalDayPnl.value / prevMv) * 100).toFixed(2)
+})
+
+function positionRatio(row: any): string {
+  const mv = totalMarketValue.value
+  if (mv <= 0) return '0.00'
+  return ((Number(row.market_value) || 0) / mv * 100).toFixed(1)
+}
 
 const orderForm = reactive({
   symbol: 'BTC/USDT',
@@ -243,8 +332,8 @@ async function submitPosition() {
     ElMessage.warning('请输入标的代码')
     return
   }
-  if (posForm.quantity <= 0 || posForm.cost_price <= 0) {
-    ElMessage.warning('数量和成本价必须大于0')
+  if (posForm.quantity <= 0 || posForm.cost_price === 0) {
+    ElMessage.warning('数量必须大于0，成本价不能为0')
     return
   }
   posSubmitting.value = true
@@ -253,7 +342,7 @@ async function submitPosition() {
     ElMessage.success('持仓录入成功')
     showPosDialog.value = false
     await loadPositions()
-  } catch {
+  } catch (err) { console.error('Operation failed:', err); 
     // error handled by interceptor
   } finally { posSubmitting.value = false }
 }
@@ -274,6 +363,24 @@ function resetImport() {
   importResult.value = null
 }
 
+async function syncPositions() {
+  syncLoading.value = true
+  try {
+    const res: any = await tradeApi.syncPositions()
+    const data = res.data || {}
+    if (data.total === 0) {
+      ElMessage.info('东方财富账号无持仓数据')
+    } else {
+      ElMessage.success(`同步完成: 新建 ${data.created} 条, 更新 ${data.updated} 条`)
+    }
+    lastSyncTime.value = new Date().toLocaleString('zh-CN')
+    await loadPositions()
+  } catch (err: any) {
+    const msg = err?.response?.data?.detail || '同步失败，请检查东方财富 token 是否有效'
+    ElMessage.error(msg)
+  } finally { syncLoading.value = false }
+}
+
 async function submitImport() {
   if (!importFile.value) {
     ElMessage.warning('请选择文件')
@@ -289,7 +396,7 @@ async function submitImport() {
       ElMessage.warning(`导入完成但有 ${importResult.value.errors} 条失败`)
     }
     await loadPositions()
-  } catch {
+  } catch (err) { console.error('Operation failed:', err); 
     // error handled by interceptor
   } finally { importSubmitting.value = false }
 }
@@ -309,21 +416,6 @@ function getSymbolName(symbol: string): string {
   const s = symbols.value.find((x: any) => x.symbol === symbol || x.symbol.startsWith(symbol + '.'))
   if (s?.name) return s.name
   return POSITION_NAMES[symbol] || symbol
-}
-
-function positionSummary({ columns, data }: any) {
-  const sums: string[] = []
-  columns.forEach((_: any, idx: number) => {
-    if (idx === 0) { sums[idx] = '合计'; return }
-    const prop = columns[idx].property
-    if (prop === 'market_value' || prop === 'pnl' || prop === 'day_pnl') {
-      const total = data.reduce((acc: number, row: any) => acc + (Number(row[prop]) || 0), 0)
-      sums[idx] = total.toLocaleString()
-    } else {
-      sums[idx] = ''
-    }
-  })
-  return sums
 }
 
 const orderStatusLabel = (s: string) => ({ pending: '待成交', partial: '部分成交', filled: '已成交', canceled: '已撤销', rejected: '已拒绝' }[s] || s)
@@ -351,7 +443,7 @@ async function submitOrder() {
     await tradeApi.createOrder(orderForm as any)
     ElMessage.success('订单提交成功')
     await Promise.all([loadPositions(), loadOrders()])
-  } catch {
+  } catch (err) { console.error('Operation failed:', err); 
     // error handled by interceptor
   } finally { submitting.value = false }
 }
@@ -361,15 +453,35 @@ async function cancelOrder(id: number) {
     await tradeApi.cancelOrder(id)
     ElMessage.success('撤单成功')
     await loadOrders()
-  } catch {}
+  } catch (err) { console.error('Operation failed:', err); }
 }
 
 onMounted(async () => {
   try {
     const res: any = await marketApi.getSymbols()
     symbols.value = res.data || []
-  } catch {}
+  } catch (err) { console.error('Operation failed:', err); }
   loadPositions()
   loadOrders()
 })
 </script>
+
+<style scoped>
+.summary-card {
+  background: #f5f7fa;
+  border-radius: 8px;
+  padding: 12px 14px;
+  text-align: center;
+}
+.summary-card .summary-label {
+  font-size: 12px;
+  color: #909399;
+  margin-bottom: 4px;
+}
+.summary-card .summary-value {
+  font-size: 18px;
+  font-weight: 600;
+  color: #303133;
+  font-variant-numeric: tabular-nums;
+}
+</style>

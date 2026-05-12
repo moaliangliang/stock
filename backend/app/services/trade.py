@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import and_, desc, select, update
+from sqlalchemy import and_, desc, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.order import Order, OrderSide, OrderStatus, OrderType, Trade
@@ -183,21 +183,26 @@ async def get_positions(
     symbol: Optional[str] = None,
 ) -> List[PositionModel]:
     """
-    Get all current positions for a user.
+    Get all current positions for a user, with real-time price refresh.
 
     Args:
         db: Database session.
         user_id: ID of the user.
 
     Returns:
-        A list of Position objects.
+        A list of Position objects with up-to-date prices.
     """
     query = select(PositionModel).where(PositionModel.user_id == user_id)
     if symbol:
         query = query.where(PositionModel.symbol == symbol)
     query = query.order_by(PositionModel.symbol)
     result = await db.execute(query)
-    return list(result.scalars().all())
+    positions = list(result.scalars().all())
+
+    if positions:
+        await _batch_refresh_positions(db, positions)
+
+    return positions
 
 
 async def get_position(
@@ -224,7 +229,10 @@ async def get_position(
             )
         )
     )
-    return result.scalar_one_or_none()
+    position = result.scalar_one_or_none()
+    if position:
+        await _batch_refresh_positions(db, [position])
+    return position
 
 
 async def update_position(
@@ -466,6 +474,65 @@ async def create_or_update_position(
     return position
 
 
+async def _batch_refresh_positions(db: AsyncSession, positions: list) -> None:
+    """Batch-update all positions with latest ticker prices in a single round-trip."""
+    if not positions:
+        return
+
+    from app.models.market_data import Ticker as TickerModel
+
+    # Build OR query: (symbol == pos.symbol) OR (symbol LIKE pos.symbol.%)
+    conditions = []
+    for p in positions:
+        conditions.append(TickerModel.symbol == p.symbol)
+        conditions.append(TickerModel.symbol.like(p.symbol + ".%"))
+
+    ticker_result = await db.execute(
+        select(TickerModel).where(or_(*conditions))
+    )
+    all_tickers = list(ticker_result.scalars().all())
+
+    # Build lookup: position symbol → best ticker
+    ticker_map: dict[str, Any] = {}
+    for t in all_tickers:
+        short = t.symbol.rsplit(".", 1)[0] if "." in t.symbol else t.symbol
+        # First match wins (exact match takes priority since it comes first in OR)
+        if short not in ticker_map:
+            ticker_map[short] = t
+
+    for pos in positions:
+        ticker = ticker_map.get(pos.symbol)
+        if not ticker or not ticker.last_price or ticker.last_price <= 0:
+            continue
+
+        price = float(ticker.last_price)
+        pos.current_price = price
+        pos.market_value = round(pos.quantity * price, 2)
+
+        pos.pnl = round(pos.quantity * (price - pos.cost_price), 2)
+        pos.pnl_ratio = round((price - pos.cost_price) / abs(pos.cost_price) * 100, 2) if pos.cost_price != 0 else 0
+
+        if ticker.change_24h is not None or ticker.prev_close is not None:
+            # 优先用 prev_close 精确计算当日价格变动
+            pc = float(ticker.prev_close) if ticker.prev_close else None
+            if pc and pc > 0:
+                abs_change = price - pc
+            else:
+                chg = float(ticker.change_24h)
+                pc = price / (1 + chg / 100) if chg != -100 else 0
+                abs_change = pc * chg / 100
+            pos.day_pnl = round(pos.quantity * abs_change, 2)
+            if ticker.change_24h is not None:
+                pos.day_pnl_ratio = round(float(ticker.change_24h), 2)
+            elif pc and pc > 0:
+                pos.day_pnl_ratio = round((price - pc) / pc * 100, 2)
+        else:
+            pos.day_pnl = 0
+            pos.day_pnl_ratio = 0
+
+    await db.flush()
+
+
 async def _refresh_position_price(db: AsyncSession, position: PositionModel) -> None:
     """用最新 ticker 价格刷新持仓的 current_price / pnl / day_pnl。"""
     try:
@@ -475,24 +542,170 @@ async def _refresh_position_price(db: AsyncSession, position: PositionModel) -> 
 
         sdb = SyncSessionLocal()
         try:
-            result = sdb.execute(
-                sync_select(TickerModel).where(TickerModel.symbol == position.symbol)
+            # 兼容 position.symbol 不带后缀但 ticker.symbol 带后缀(.SZ/.SH)的情况
+            stmt = sync_select(TickerModel).where(
+                (TickerModel.symbol == position.symbol) |
+                (TickerModel.symbol.like(position.symbol + ".%"))
             )
+            result = sdb.execute(stmt)
             ticker = result.scalar_one_or_none()
             if ticker and ticker.last_price and ticker.last_price > 0:
                 price = float(ticker.last_price)
                 position.current_price = price
                 position.market_value = round(position.quantity * price, 2)
                 position.pnl = round(position.quantity * (price - position.cost_price), 2)
-                if position.cost_price > 0:
-                    position.pnl_ratio = round((price - position.cost_price) / position.cost_price * 100, 2)
-                if ticker.change_24h:
-                    position.day_pnl = round(position.quantity * float(ticker.change_24h), 2)
-                    position.day_pnl_ratio = round(float(ticker.change_24h) / price * 100, 2) if price > 0 else 0
+                position.pnl_ratio = round((price - position.cost_price) / abs(position.cost_price) * 100, 2) if position.cost_price != 0 else 0
+                # 优先用 prev_close 精确计算当日价格变动
+                if ticker.change_24h is not None or ticker.prev_close is not None:
+                    pc = float(ticker.prev_close) if ticker.prev_close else None
+                    if pc and pc > 0:
+                        abs_change = price - pc
+                    else:
+                        chg = float(ticker.change_24h)
+                        pc = price / (1 + chg / 100) if chg != -100 else 0
+                        abs_change = pc * chg / 100
+                    position.day_pnl = round(position.quantity * abs_change, 2)
+                    if ticker.change_24h is not None:
+                        position.day_pnl_ratio = round(float(ticker.change_24h), 2)
+                    elif pc and pc > 0:
+                        position.day_pnl_ratio = round((price - pc) / pc * 100, 2)
+                else:
+                    position.day_pnl = 0
+                    position.day_pnl_ratio = 0
         finally:
             sdb.close()
     except Exception:
         pass
+
+
+async def _fetch_positions_via_agent() -> List[Dict[str, Any]]:
+    """通过 Windows easytrader 代理获取持仓。"""
+    from app.utils.eastmoney_trade_adapter import EastMoneyTradeAdapter
+    from app.core.config import settings
+
+    adapter = EastMoneyTradeAdapter(agent_url=settings.EM_TRADE_AGENT_URL)
+    result = await adapter.get_position()
+    positions = result.get("positions", [])
+    # 统一字段名：stock_code → symbol, current_amount → quantity 等
+    mapped = []
+    for p in positions:
+        code = str(p.get("stock_code") or p.get("code") or "")
+        from app.utils.eastmoney_account_client import em_code_to_symbol
+        symbol = em_code_to_symbol(code)
+        qty = int(float(p.get("current_amount") or p.get("enable_amount") or 0))
+        if not symbol or qty <= 0:
+            continue
+        mapped.append({
+            "symbol": symbol,
+            "quantity": qty,
+            "cost_price": float(p.get("cost_price") or p.get("hold_price") or 0),
+            "market_value": float(p.get("market_value") or p.get("income_balance") or 0),
+        })
+    return mapped
+
+
+async def sync_positions_from_eastmoney(
+    db: AsyncSession,
+    user_id: int,
+) -> Dict[str, Any]:
+    """从东方财富账号同步持仓到本地。
+
+    支持两种数据源（按优先级）：
+      1. EM_ACCOUNT_* cookie 直连 tradeapp.eastmoney.com（推荐，纯 Linux）
+      2. Windows easytrader 代理（EM_TRADE_AGENT_URL），适合已有 PC 客户端场景
+
+    逐条 upsert 到本地 positions 表。
+
+    Returns:
+        {created, updated, total, positions: [...]}
+    """
+    import logging
+    from app.core.config import settings
+
+    logger = logging.getLogger(__name__)
+
+    raw_positions = None
+
+    # 方式一：cookie 直连 API
+    from app.utils.eastmoney_account_client import EastMoneyAccountClient
+    client = EastMoneyAccountClient.from_settings()
+    if client.is_configured:
+        try:
+            raw_positions = await client.get_positions()
+        except RuntimeError as e:
+            raise ValueError(f"东方财富持仓获取失败: {e}")
+
+    # 方式二：Windows easytrader 代理
+    if raw_positions is None and settings.EM_TRADE_AGENT_URL not in ("", "http://127.0.0.1:8520"):
+        try:
+            raw_positions = await _fetch_positions_via_agent()
+        except Exception as e:
+            raise ValueError(f"东方财富代理获取持仓失败: {e}")
+
+    if raw_positions is None:
+        raise ValueError(
+            "东方财富账号未配置。请选择以下其一：\n"
+            "  方式A: 浏览器登录 tradeapp.eastmoney.com → F12 → Application → Cookies "
+            "复制 userid/ctToken/utToken/fundaccount/secuid 到 .env 的 EM_ACCOUNT_* 字段\n"
+            "  方式B: Windows 端运行 eastmoney_agent.py 后，设置 EM_TRADE_AGENT_URL=http://<Windows_IP>:8520"
+        )
+
+    if not raw_positions:
+        logger.info("东方财富账号无持仓数据")
+        return {"created": 0, "updated": 0, "total": 0, "positions": []}
+
+    created = 0
+    updated = 0
+    synced = []
+
+    for raw in raw_positions:
+        symbol = raw.get("symbol", "")
+        if not symbol:
+            continue
+
+        quantity = raw.get("quantity", 0)
+        cost_price = raw.get("cost_price", 0)
+        if quantity <= 0:
+            continue
+
+        # 检测是否已存在
+        from sqlalchemy import and_, select as sqla_select
+        result = await db.execute(
+            sqla_select(PositionModel).where(
+                and_(
+                    PositionModel.user_id == user_id,
+                    PositionModel.symbol == symbol,
+                )
+            )
+        )
+        existing = result.scalar_one_or_none()
+
+        await create_or_update_position(
+            db, user_id, symbol, quantity, cost_price,
+        )
+
+        if existing:
+            updated += 1
+        else:
+            created += 1
+
+        synced.append({
+            "symbol": symbol,
+            "quantity": quantity,
+            "cost_price": cost_price,
+            "market_value": raw.get("market_value", 0),
+        })
+
+    logger.info(
+        "东方财富持仓同步完成: 新建 %s, 更新 %s, 共 %s 条",
+        created, updated, len(synced),
+    )
+    return {
+        "created": created,
+        "updated": updated,
+        "total": len(synced),
+        "positions": synced,
+    }
 
 
 async def import_positions_from_excel(

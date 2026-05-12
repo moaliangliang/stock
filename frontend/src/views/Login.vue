@@ -44,7 +44,6 @@
           <span style="color: #ccc; margin: 0 8px">|</span>
           <el-link type="info" style="font-size: 13px">忘记密码？</el-link>
         </div>
-        <div>默认账号: admin / admin123</div>
       </div>
     </div>
   </div>
@@ -64,8 +63,8 @@ const formRef = ref<FormInstance>()
 const loading = ref(false)
 
 const form = reactive({
-  username: 'admin',
-  password: 'admin123',
+  username: '',
+  password: '',
 })
 
 const rules: FormRules = {

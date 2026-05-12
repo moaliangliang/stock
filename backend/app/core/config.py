@@ -49,9 +49,26 @@ class Settings(BaseSettings):
             return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
 
-    # Celery
-    CELERY_BROKER_URL: str = "redis://localhost:6379/1"
-    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
+    # Celery — defaults derive from REDIS_URL (with db 1/2), overridable for multi-host setups
+    CELERY_BROKER_URL: str = ""
+    CELERY_RESULT_BACKEND: str = ""
+
+    @property
+    def _celery_broker_url(self) -> str:
+        if self.CELERY_BROKER_URL:
+            return self.CELERY_BROKER_URL
+        # Derive from REDIS_URL, replacing DB number with 1
+        if self.REDIS_PASSWORD:
+            return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}/1"
+        return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/1"
+
+    @property
+    def _celery_result_backend(self) -> str:
+        if self.CELERY_RESULT_BACKEND:
+            return self.CELERY_RESULT_BACKEND
+        if self.REDIS_PASSWORD:
+            return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}/2"
+        return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/2"
 
     # 行情
     MARKET_DATA_PROVIDER: str = "sina"  # sina | eastmoney | eastmoney_first | mock
@@ -75,6 +92,16 @@ class Settings(BaseSettings):
     # 交易
     ORDER_EXECUTION_MODE: str = "sandbox"  # sandbox | eastmoney
     EM_TRADE_AGENT_URL: str = "http://127.0.0.1:8520"  # Windows easytrader 代理地址
+
+    # 东方财富账号同步 (tradeapp.eastmoney.com 直接API)
+    EM_ACCOUNT_USERID: str = ""       # 用户ID (抓包Cookie获取)
+    EM_ACCOUNT_CT_TOKEN: str = ""     # 客户端Token
+    EM_ACCOUNT_UT_TOKEN: str = ""     # 用户Token
+    EM_ACCOUNT_FUND_ACCOUNT: str = "" # 资金账号
+    EM_ACCOUNT_SECUID: str = ""       # 实盘账户ID
+    EM_ACCOUNT_BASE_URL: str = "https://tradeapp.eastmoney.com"
+    EM_ACCOUNT_SYNC_ENABLED: bool = False  # 是否启用自动同步
+    EM_ACCOUNT_SYNC_INTERVAL: int = 300    # 自动同步间隔(秒)，默认5分钟
     DEFAULT_MAX_POSITION_RATIO: float = 0.3
     DEFAULT_MAX_DAILY_LOSS: float = 0.05
     DEFAULT_STOP_LOSS_RATIO: float = 0.02
@@ -83,6 +110,7 @@ class Settings(BaseSettings):
     AUTO_TRADE_ENABLED: bool = False         # 总开关：是否启用自动交易
     AUTO_TRADE_DRY_RUN: bool = True          # 干跑模式：只记录不实际下单（首次启用建议先开）
     AUTO_TRADE_MIN_LEVEL: str = "STRONG_BUY" # 触发自动交易的最低信号级别: STRONG_BUY | BUY
+    AUTO_TRADE_BASE_CAPITAL: float = 100000   # 自动交易资金基数（元），用作仓位计算的参考总资金
     AUTO_TRADE_MAX_PER_ORDER: float = 50000  # 单笔自动交易最大金额（元）
     AUTO_TRADE_MAX_DAILY_ORDERS: int = 5     # 每日自动交易最大笔数
     AUTO_TRADE_POSITION_PCT: float = 0.1     # 单只股票自动交易仓位占比（相对总资金）

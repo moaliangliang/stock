@@ -2,9 +2,12 @@
  * WebSocket Composable - 自动重连、心跳、消息分发
  */
 import { ref, onUnmounted } from 'vue'
+import { getToken } from '@/utils/token'
 
 interface UseWebSocketOptions {
   url: string
+  /** Auth token sent as first message. Defaults to getToken() if not provided. */
+  authToken?: string
   reconnectInterval?: number
   maxRetries?: number
   onMessage?: (data: any) => void
@@ -34,6 +37,11 @@ export function useWebSocket(options: UseWebSocketOptions) {
       connected.value = true
       retries = 0
       options.onStatusChange?.(true)
+      // Send auth token as first message (never in URL query params)
+      const token = options.authToken ?? getToken()
+      if (token && ws && ws.readyState === WebSocket.OPEN) {
+        try { ws.send(JSON.stringify({ type: 'auth', token })) } catch { /* ignore */ }
+      }
       // 心跳每 30s
       heartbeatTimer = setInterval(() => {
         if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }))
@@ -44,7 +52,9 @@ export function useWebSocket(options: UseWebSocketOptions) {
       try {
         const data = JSON.parse(event.data)
         options.onMessage?.(data)
-      } catch { /* ignore non-JSON messages */ }
+      } catch {
+        // non-JSON message (e.g. 'pong'), silently ignore
+      }
     }
 
     ws.onclose = () => {

@@ -75,3 +75,42 @@ export interface Ticker {
   change_24h?: number
   updated_at: string
 }
+
+/** 订单 */
+export interface Order {
+  id: number
+  symbol: string
+  side: string
+  type: string
+  price?: number
+  quantity: number
+  filled_quantity: number
+  avg_price?: number
+  status: string
+  created_at: string
+  updated_at: string
+}
+
+/** 持仓 */
+export interface Position {
+  id: number
+  symbol: string
+  quantity: number
+  cost_price: number
+  current_price: number
+  market_value: number
+  unrealized_pnl: number
+  created_at: string
+}
+
+/** 成交记录 */
+export interface Trade {
+  id: number
+  symbol: string
+  side: string
+  price: number
+  quantity: number
+  fee: number
+  pnl?: number
+  created_at: string
+}

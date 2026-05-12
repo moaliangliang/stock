@@ -100,26 +100,32 @@ def _get_drawdown_factor(total_value: float) -> Tuple[float, float]:
     Track peak equity and return a drawdown adjustment factor.
     Returns (drawdown_pct, adjustment_factor).
     Factor: 1.0 = normal, 0.5 = half size (DD>10%), 0.0 = stop (DD>20%).
+
+    Uses fcntl file locking to prevent concurrent read-modify-write races.
     """
+    import fcntl
     import json as _json
     peak_file = os.path.join(os.path.dirname(__file__), '..', '..', '..', '.equity_peak.json')
+    peak_lock_file = peak_file + '.lock'
 
     peak = total_value
     try:
-        if os.path.exists(peak_file):
-            with open(peak_file) as f:
-                peak = float(_json.load(f).get('peak', total_value))
+        os.makedirs(os.path.dirname(peak_file), exist_ok=True)
+        with open(peak_lock_file, 'w') as lf:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+            try:
+                if os.path.exists(peak_file):
+                    with open(peak_file) as f:
+                        peak = float(_json.load(f).get('peak', total_value))
+
+                if total_value > peak:
+                    peak = total_value
+                    with open(peak_file, 'w') as f:
+                        _json.dump({'peak': peak, 'updated': datetime.now(timezone.utc).isoformat()}, f)
+            finally:
+                fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
     except Exception:
         pass
-
-    # Update peak if new high
-    if total_value > peak:
-        peak = total_value
-        try:
-            with open(peak_file, 'w') as f:
-                _json.dump({'peak': peak, 'updated': datetime.now(timezone.utc).isoformat()}, f)
-        except Exception:
-            pass
 
     if peak <= 0:
         return 0.0, 1.0
@@ -209,9 +215,7 @@ async def execute_signal(
 
     # Position sizing
     pos_stmt = select(func.coalesce(func.sum(Position.market_value), 0)).where(Position.user_id == user_id)
-    total_value = float((await db.execute(pos_stmt)).scalar() or 0)
-    if total_value < 1000:
-        total_value = 100000
+    total_value = max(float((await db.execute(pos_stmt)).scalar() or 0), settings.AUTO_TRADE_BASE_CAPITAL)
 
     price_stmt = select(Ticker.last_price).where(Ticker.symbol == symbol)
     price_row = await db.execute(price_stmt)
@@ -241,6 +245,22 @@ async def execute_signal(
         logger.info(f"[AUTO-TRADE] {name}({symbol}) order=#{order.id} level={level} "
                      f"qty={quantity} price={current_price:.2f} value={order_value:.0f} "
                      f"slip={slippage:.3f}")
+
+        # 自动创建 5% 止损卖单（手动创建，不走 sandbox 自动成交）
+        if settings.ORDER_EXECUTION_MODE == "sandbox":
+            stop_price = round(current_price * 0.95, 2)
+            from app.models.order import Order as OrderModel, OrderSide as OS, OrderStatus as OSt
+            stop_order = OrderModel(
+                user_id=user_id, symbol=symbol, side=OS.SELL,
+                type="stop", status=OSt.PENDING,
+                stop_price=stop_price, price=stop_price,
+                quantity=float(quantity), source="auto",
+                remark=f"auto stop-loss | {name} | -5% | entry={current_price:.2f}",
+            )
+            db.add(stop_order)
+            await db.flush()
+            logger.info(f"[AUTO-TRADE] {name}({symbol}) stop-loss set at {stop_price} (-5%)")
+
         return {"executed": True, "order_id": order.id,
                 "reason": f"{name} {level} {quantity}股@{current_price:.2f} 订单#{order.id}",
                 "dry_run": False}
@@ -323,11 +343,9 @@ def execute_signal_sync(
         return {"executed": False, "order_id": None,
                 "reason": f"{name}今日已自动交易(订单#{existing.id})，跳过", "dry_run": settings.AUTO_TRADE_DRY_RUN}
 
-    total_value = float(db.execute(
+    total_value = max(float(db.execute(
         select(func.coalesce(func.sum(Position.market_value), 0)).where(Position.user_id == user_id)
-    ).scalar() or 0)
-    if total_value < 1000:
-        total_value = 100000
+    ).scalar() or 0), settings.AUTO_TRADE_BASE_CAPITAL)
 
     row = db.execute(select(Ticker.last_price).where(Ticker.symbol == symbol)).fetchone()
     current_price = float(row[0]) if row and row[0] else price
@@ -373,6 +391,21 @@ def execute_signal_sync(
             )
             db.add(trade)
             db.flush()
+
+            # 自动创建 5% 止损卖单
+            stop_price = round(current_price * 0.95, 2)
+            stop_order = Order(
+                user_id=user_id, symbol=symbol, side=OrderSide.SELL,
+                type="stop", status=OrderStatus.PENDING,
+                stop_price=stop_price,
+                price=stop_price,
+                quantity=float(quantity),
+                source="auto",
+                remark=f"auto stop-loss | {name} | -5% | entry={current_price:.2f}",
+            )
+            db.add(stop_order)
+            db.flush()
+            logger.info(f"[AUTO-TRADE] {name}({symbol}) stop-loss set at {stop_price} (-5%)")
         else:
             # Real broker mode: send order to Windows easytrader agent
             import urllib.request as _urllib

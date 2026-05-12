@@ -13,6 +13,13 @@ import numpy as np
 from app.models.strategy import StrategyType
 
 
+def _safe_round(value: float, ndigits: int = 4) -> float:
+    """Round a float, clamping inf/nan to safe sentinel values."""
+    if math.isinf(value) or math.isnan(value):
+        return 999999.0 if value > 0 else -999999.0
+    return round(value, ndigits)
+
+
 def run_backtest(
     strategy_type: StrategyType,
     params: Dict[str, Any],
@@ -86,13 +93,19 @@ def run_backtest(
         signal_map.setdefault(ts, []).append(sig)
 
     # ------------------------------------------------------------------
-    # 3. Walk through each bar
+    # 3. Walk through each bar (integer-indexed for next-bar lookup)
     # ------------------------------------------------------------------
-    for idx, row in df.iterrows():
+    n_bars = len(df)
+    for i in range(n_bars):
+        row = df.iloc[i]
         ts = int(row["timestamp"].timestamp())
         close_price = row["close"]
-        high_price = row["high"]
-        low_price = row["low"]
+
+        # -- Next bar's open for realistic fill (can't trade same bar's close)
+        if i + 1 < n_bars:
+            next_open = df.iloc[i + 1]["open"]
+        else:
+            next_open = close_price  # last bar fallback
 
         # -- Equity value at this bar --
         current_equity = cash + position * close_price
@@ -116,32 +129,42 @@ def run_backtest(
 
         for sig in bar_signals:
             action = sig.get("action", "").lower()
-            sig_price = sig.get("price", close_price)
 
-            # Apply slippage
-            if action == "buy":
-                fill_price = sig_price * (1 + slippage)
-            else:
-                fill_price = sig_price * (1 - slippage)
-
-            fee = fill_price * sig.get("quantity", 1) * commission
+            # Fill at NEXT bar's open (realistic execution), not current close
+            fill_price = next_open * (1 + slippage) if action == "buy" else next_open * (1 - slippage)
 
             if action == "buy" and cash > 0:
-                # Use all available cash (simple approach)
-                qty = (cash * 0.99) / fill_price  # reserve 1 % for fees
+                # Use all available cash, rounded to A-share lot size (100 shares)
+                raw_qty = (cash * 0.99) / fill_price
+                lot_qty = math.floor(raw_qty / 100) * 100
+                if lot_qty < 100:
+                    continue  # not enough cash for even 1 lot
+                qty = float(lot_qty)
                 cost = qty * fill_price
                 total_cost = cost + cost * commission
 
                 if total_cost <= cash:
+                    # Weighted-average entry price when adding to existing position
+                    if open_trade is not None and position > 0:
+                        total_qty = position + qty
+                        avg_price = (
+                            position * open_trade["entry_price"] + qty * fill_price
+                        ) / total_qty
+                        open_trade = {
+                            "entry_time": ts,
+                            "entry_price": avg_price,
+                            "quantity": total_qty,
+                            "fee": open_trade["fee"] + cost * commission,
+                        }
+                    else:
+                        open_trade = {
+                            "entry_time": ts,
+                            "entry_price": fill_price,
+                            "quantity": qty,
+                            "fee": cost * commission,
+                        }
                     position += qty
                     cash -= total_cost
-
-                    open_trade = {
-                        "entry_time": ts,
-                        "entry_price": fill_price,
-                        "quantity": qty,
-                        "fee": cost * commission,
-                    }
 
                     trades.append({
                         "timestamp": ts,
@@ -153,45 +176,59 @@ def run_backtest(
                     })
 
             elif action == "sell" and position > 0:
-                qty = position  # sell entire position
+                if open_trade is None:
+                    continue  # no entry to match, skip orphan sell signal
+
+                # Round position down to lot size for A-shares
+                lot_qty = math.floor(position / 100) * 100
+                if lot_qty < 100:
+                    continue  # less than 1 lot remaining
+                qty = float(lot_qty)
                 proceeds = qty * fill_price
                 total_proceeds = proceeds - proceeds * commission
 
                 cash += total_proceeds
-                pnl = total_proceeds - (qty * (open_trade or {}).get("entry_price", 0))
-                position = 0.0
+                pnl = total_proceeds - (qty * open_trade["entry_price"])
+                position -= qty
 
-                if open_trade:
-                    trades.append({
-                        "timestamp": ts,
-                        "action": "sell",
-                        "price": round(fill_price, 4),
-                        "quantity": round(qty, 6),
-                        "fee": round(proceeds * commission, 4),
-                        "pnl": round(pnl, 4),
-                        "reason": sig.get("reason", ""),
-                    })
+                trades.append({
+                    "timestamp": ts,
+                    "action": "sell",
+                    "price": round(fill_price, 4),
+                    "quantity": round(qty, 6),
+                    "fee": round(proceeds * commission, 4),
+                    "pnl": round(pnl, 4),
+                    "reason": sig.get("reason", ""),
+                })
+                # Reduce tracked quantity on partial sell; clear if fully closed
+                if position < 0.01:
                     open_trade = None
+                else:
+                    open_trade["quantity"] = position
 
     # Close any remaining position at the last price
     if position > 0 and len(df) > 0:
         last_row = df.iloc[-1]
         close_price = last_row["close"]
         fill_price = close_price * (1 - slippage)
-        qty = position
-        proceeds = qty * fill_price
-        total_proceeds = proceeds - proceeds * commission
-        cash += total_proceeds
+        lot_qty = math.floor(position / 100) * 100
+        if lot_qty >= 100:
+            qty = float(lot_qty)
+            proceeds = qty * fill_price
+            total_proceeds = proceeds - proceeds * commission
+            cash += total_proceeds
 
-        trades.append({
-            "timestamp": int(last_row["timestamp"].timestamp()),
-            "action": "sell",
-            "price": round(fill_price, 4),
-            "quantity": round(qty, 6),
-            "fee": round(proceeds * commission, 4),
-            "pnl": round(total_proceeds - (qty * (open_trade or {}).get("entry_price", 0)), 4),
-            "reason": "Position closed at end of backtest",
-        })
+            if open_trade is not None:
+                pnl = total_proceeds - (qty * open_trade["entry_price"])
+                trades.append({
+                    "timestamp": int(last_row["timestamp"].timestamp()),
+                    "action": "sell",
+                    "price": round(fill_price, 4),
+                    "quantity": round(qty, 6),
+                    "fee": round(proceeds * commission, 4),
+                    "pnl": round(pnl, 4),
+                    "reason": "Position closed at end of backtest",
+                })
         position = 0.0
 
     # ------------------------------------------------------------------
@@ -200,11 +237,26 @@ def run_backtest(
     final_equity = cash  # position is always 0 here
     total_return = (final_equity - initial_capital) / initial_capital if initial_capital > 0 else 0.0
 
-    # Annualised return
-    if len(df) > 1:
-        days = (df["timestamp"].iloc[-1] - df["timestamp"].iloc[0]).total_seconds() / 86400.0
-        years = max(days / 365.0, 1 / 365.0)
-        annual_return = (1 + total_return) ** (1 / years) - 1
+    # Annualised return — infer periods-per-year from median bar gap
+    periods_per_year = 245  # default: daily
+    if len(df) > 2:
+        gaps = df["timestamp"].diff().dropna()
+        median_gap_sec = gaps.median().total_seconds()
+        if median_gap_sec >= 86400:         # daily
+            periods_per_year = 245
+        elif median_gap_sec >= 3600:        # hourly
+            periods_per_year = int(245 * 6.5)    # ~1592
+        elif median_gap_sec >= 1800:        # 30-min
+            periods_per_year = int(245 * 6.5 * 2)
+        elif median_gap_sec >= 900:         # 15-min
+            periods_per_year = int(245 * 6.5 * 4)
+        elif median_gap_sec >= 300:         # 5-min
+            periods_per_year = int(245 * 6.5 * 12)
+        else:                               # 1-min
+            periods_per_year = int(245 * 6.5 * 60)
+        annual_return = (1 + total_return) ** (periods_per_year / len(df)) - 1
+    elif len(df) > 1:
+        annual_return = total_return  # not enough data to annualise
     else:
         annual_return = 0.0
 
@@ -223,26 +275,25 @@ def run_backtest(
     gross_loss = abs(sum(t.get("pnl", 0) for t in sell_trades if t.get("pnl", 0) < 0))
     profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
 
-    # Sharpe ratio (annualised)
+    # Sharpe ratio (annualised using inferred periods-per-year)
     if len(daily_returns) > 1:
         avg_return = np.mean(daily_returns)
         std_return = np.std(daily_returns, ddof=1)
-        # Annualise: assuming ~252 trading days / year
-        sharpe_ratio = (avg_return / std_return * math.sqrt(252)) if std_return > 0 else 0.0
+        sharpe_ratio = (avg_return / std_return * math.sqrt(periods_per_year)) if std_return > 0 else 0.0
     else:
         sharpe_ratio = 0.0
 
     return {
-        "total_return": round(total_return, 6),
-        "annual_return": round(annual_return, 6),
-        "max_drawdown": round(max_drawdown, 6),
-        "sharpe_ratio": round(sharpe_ratio, 4),
-        "win_rate": round(win_rate, 4),
+        "total_return": _safe_round(total_return, 6),
+        "annual_return": _safe_round(annual_return, 6),
+        "max_drawdown": _safe_round(max_drawdown, 6),
+        "sharpe_ratio": _safe_round(sharpe_ratio, 4),
+        "win_rate": _safe_round(win_rate, 4),
         "total_trades": total_trades,
         "profit_trades": profit_trades,
         "loss_trades": loss_trades,
-        "profit_factor": round(profit_factor, 4),
-        "final_equity": round(final_equity, 2),
+        "profit_factor": _safe_round(profit_factor, 4),
+        "final_equity": _safe_round(final_equity, 2),
         "equity_curve": equity_curve,
         "trades": trades,
     }
@@ -261,7 +312,9 @@ def _prepare_dataframe(kline_data: List[Dict[str, Any]]) -> pd.DataFrame:
     df = pd.DataFrame(kline_data)
 
     if "timestamp" in df.columns:
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s", utc=True)
+        sample = float(df["timestamp"].dropna().iloc[0]) if len(df) > 0 else 0
+        unit = "ms" if sample > 1e12 else "s"
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit=unit, utc=True)
 
     for col in ["open", "high", "low", "close", "volume"]:
         if col in df.columns:
@@ -348,7 +401,7 @@ def _empty_result(initial_capital: float) -> Dict[str, Any]:
         "total_trades": 0,
         "profit_trades": 0,
         "loss_trades": 0,
-        "profit_factor": 0.0,
+        "profit_factor": 0.0,  # no trades → no factor; caller should check total_trades
         "final_equity": round(initial_capital, 2),
         "equity_curve": [],
         "trades": [],

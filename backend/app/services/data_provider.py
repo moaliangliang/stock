@@ -206,6 +206,7 @@ def _update_ticker_from_quote(ticker: Ticker, q: Dict[str, Any], source: str = "
     ticker.low_24h = q.get("low")
     ticker.volume_24h = q.get("volume")
     ticker.change_24h = q.get("change_pct")
+    ticker.prev_close = q.get("prev_close")
     ticker.turnover_24h = q.get("amount")
     ticker.bid = round(q["last_price"] * 0.999, 2)
     ticker.ask = round(q["last_price"] * 1.001, 2)
@@ -224,6 +225,7 @@ def _create_ticker_from_quote(db: Session, sym: SymbolInfo, q: Dict[str, Any], s
         low_24h=q.get("low"),
         volume_24h=q.get("volume"),
         change_24h=q.get("change_pct"),
+        prev_close=q.get("prev_close"),
         turnover_24h=q.get("amount"),
         data_source=source,
     )
@@ -623,11 +625,12 @@ def _db_cache_set(symbol: str, data: Dict[str, Any]):
         from app.core.database import SyncSessionLocal
         from sqlalchemy import text
         import json
+        from datetime import datetime as _datetime
         db = SyncSessionLocal()
         try:
             db.execute(
-                text("UPDATE symbol_info SET fundamental_cache = :d, fundamental_cached_at = datetime('now') WHERE symbol = :s"),
-                {"d": json.dumps(data, ensure_ascii=False), "s": symbol},
+                text("UPDATE symbol_info SET fundamental_cache = :d, fundamental_cached_at = :now WHERE symbol = :s"),
+                {"d": json.dumps(data, ensure_ascii=False), "s": symbol, "now": _datetime.now()},
             )
             db.commit()
         finally:

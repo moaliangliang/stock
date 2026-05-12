@@ -182,7 +182,7 @@ def fetch_etf_tracking_error(symbol: str, kline_data: dict) -> Dict:
         signals.append(f"跟踪误差={te:.2f}%(严重偏离{idx_name})")
 
     # 复用 _normalize_score
-    from app.services.decision import _normalize_score
+    from app.services.scoring import _normalize_score
     score = _normalize_score(adjustments)
 
     return {

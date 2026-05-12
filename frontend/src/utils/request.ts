@@ -7,6 +7,7 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios'
 import { ElMessage } from 'element-plus'
 import router from '@/router'
+import { getToken, clearToken } from '@/utils/token'
 
 const request = axios.create({
   baseURL: '/api/v1',
@@ -19,7 +20,7 @@ const request = axios.create({
 // 请求拦截器 - 自动携带 Token
 request.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
-    const token = localStorage.getItem('token')
+    const token = getToken()
     if (token && config.headers) {
       config.headers.Authorization = `Bearer ${token}`
     }
@@ -39,8 +40,8 @@ request.interceptors.response.use(
 
     switch (status) {
       case 401:
-        localStorage.removeItem('token')
-        localStorage.removeItem('user')
+        clearToken()
+        sessionStorage.removeItem('user')
         router.push('/login')
         ElMessage.error('登录已过期，请重新登录')
         break

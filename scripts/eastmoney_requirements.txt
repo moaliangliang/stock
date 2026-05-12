@@ -1,2 +1,2 @@
-easytrader>=0.15.0
+easytrader>=0.23.0
 flask>=2.0

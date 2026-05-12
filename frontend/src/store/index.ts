@@ -3,33 +3,51 @@
  */
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import type { UserInfo } from '@/types/api'
+import { getToken, setToken as saveToken, clearToken } from '@/utils/token'
+
+const ROLE_HIERARCHY: Record<string, number> = { admin: 3, trader: 2, viewer: 1 }
+
+function safeJsonParse<T>(raw: string | null, fallback: T): T {
+  if (!raw) return fallback
+  try {
+    return JSON.parse(raw) as T
+  } catch {
+    return fallback
+  }
+}
 
 export const useAuthStore = defineStore('auth', () => {
-  const token = ref(localStorage.getItem('token') || '')
-  const user = ref(JSON.parse(localStorage.getItem('user') || 'null'))
+  const token = ref(getToken())
+  const user = ref<UserInfo | null>(safeJsonParse<UserInfo | null>(sessionStorage.getItem('user'), null))
 
   const isLoggedIn = computed(() => !!token.value)
   const isAdmin = computed(() => user.value?.role === 'admin')
   const username = computed(() => user.value?.username || '')
+  const userRole = computed(() => user.value?.role || 'viewer')
+
+  function hasRole(minRole: string): boolean {
+    return (ROLE_HIERARCHY[userRole.value] || 0) >= (ROLE_HIERARCHY[minRole] || 0)
+  }
 
   function setToken(newToken: string) {
     token.value = newToken
-    localStorage.setItem('token', newToken)
+    saveToken(newToken)
   }
 
-  function setUser(newUser: any) {
+  function setUser(newUser: UserInfo) {
     user.value = newUser
-    localStorage.setItem('user', JSON.stringify(newUser))
+    sessionStorage.setItem('user', JSON.stringify(newUser))
   }
 
   function logout() {
     token.value = ''
     user.value = null
-    localStorage.removeItem('token')
-    localStorage.removeItem('user')
+    clearToken()
+    sessionStorage.removeItem('user')
   }
 
-  return { token, user, isLoggedIn, isAdmin, username, setToken, setUser, logout }
+  return { token, user, isLoggedIn, isAdmin, username, userRole, hasRole, setToken, setUser, logout }
 })
 
 export type ThemeMode = 'light' | 'dark' | 'auto'

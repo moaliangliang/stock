@@ -1,6 +1,7 @@
 """
 Strategy service - CRUD, execution engine, and built-in strategy templates."""
 from __future__ import annotations
+import ast
 import math
 import time
 from datetime import datetime, timezone
@@ -253,9 +254,26 @@ async def run_strategy_logic(
             upper_price=upper_price, lower_price=lower_price,
         )
 
+    elif strategy.type == StrategyType.MARTINGALE:
+        base_qty = params.get("base_quantity", 100)
+        max_multiplier = params.get("max_multiplier", 8)
+        signals = martingale_strategy(df, base_qty=base_qty, max_multiplier=max_multiplier)
+
+    elif strategy.type == StrategyType.TREND_BREAK:
+        lookback = params.get("lookback", 20)
+        signals = trend_break_strategy(df, lookback=lookback)
+
+    elif strategy.type == StrategyType.CUSTOM:
+        if strategy.is_custom_code and strategy.custom_code:
+            signals = _exec_custom_strategy(df, strategy.custom_code, params)
+        else:
+            raise ValueError("CUSTOM 策略缺少 custom_code")
+
     else:
-        # Unknown / custom strategies return no signals
-        signals = []
+        raise ValueError(
+            f"策略类型 '{strategy.type.value}' 尚未实现。"
+            f"当前支持: MA_CROSS, MACD, KDJ, BOLLINGER, GRID, MARTINGALE, TREND_BREAK, CUSTOM"
+        )
 
     elapsed_ms = int((time.time() - start_time) * 1000)
 
@@ -400,10 +418,12 @@ def kdj_strategy(
     d: int = 3,
 ) -> List[Dict[str, Any]]:
     """
-    KDJ (Stochastic Oscillator) strategy.
+    KDJ (Stochastic Oscillator) strategy — 三级信号体系。
 
-    Generates BUY when K crosses above D below the 20 oversold line,
-    and SELL when K crosses below D above the 80 overbought line.
+    L1 BUY:  K/D 金叉 + K<30 (超卖区反弹，高置信度)
+    L2 BUY:  J 从负值突破0 (极端超卖反转)
+    L1 SELL: K/D 死叉 + K>70 (超买区回落，高置信度)
+    L2 SELL: J 从>100跌破100 (极端超买反转)
 
     Args:
         data: DataFrame with columns: high, low, close.
@@ -430,8 +450,10 @@ def kdj_strategy(
     df["kdj_j"] = 3 * df["kdj_k"] - 2 * df["kdj_d"]
     df["prev_k"] = df["kdj_k"].shift(1)
     df["prev_d"] = df["kdj_d"].shift(1)
+    df["prev_j"] = df["kdj_j"].shift(1)
 
     signals: List[Dict[str, Any]] = []
+    _last_signal_type = None  # avoid consecutive same-type signals
 
     for idx in df.iterrows():
         i = idx[0]
@@ -439,29 +461,61 @@ def kdj_strategy(
         if pd.isna(row.get("prev_k")) or pd.isna(row.get("prev_d")):
             continue
 
+        # L1: K/D golden cross in oversold zone (K<30)
         if (
             row["prev_k"] <= row["prev_d"]
             and row["kdj_k"] > row["kdj_d"]
-            and row["kdj_k"] < 20
+            and row["kdj_k"] < 30
         ):
             signals.append({
                 "timestamp": row.get("timestamp"),
                 "action": "buy",
                 "price": row["close"],
-                "reason": f"KDJ oversold cross (K={row['kdj_k']:.1f}, D={row['kdj_d']:.1f}, J={row['kdj_j']:.1f})",
+                "reason": f"KDJ L1 buy: golden cross oversold (K={row['kdj_k']:.1f}, D={row['kdj_d']:.1f}, J={row['kdj_j']:.1f})",
             })
+            _last_signal_type = "buy"
 
+        # L1: K/D death cross in overbought zone (K>70)
         elif (
             row["prev_k"] >= row["prev_d"]
             and row["kdj_k"] < row["kdj_d"]
-            and row["kdj_k"] > 80
+            and row["kdj_k"] > 70
         ):
             signals.append({
                 "timestamp": row.get("timestamp"),
                 "action": "sell",
                 "price": row["close"],
-                "reason": f"KDJ overbought cross (K={row['kdj_k']:.1f}, D={row['kdj_d']:.1f}, J={row['kdj_j']:.1f})",
+                "reason": f"KDJ L1 sell: death cross overbought (K={row['kdj_k']:.1f}, D={row['kdj_d']:.1f}, J={row['kdj_j']:.1f})",
             })
+            _last_signal_type = "sell"
+
+        # L2: J-line crosses above 0 (extreme oversold reversal)
+        elif (
+            pd.notna(row.get("prev_j"))
+            and row["prev_j"] <= 0
+            and row["kdj_j"] > 0
+        ):
+            signals.append({
+                "timestamp": row.get("timestamp"),
+                "action": "buy",
+                "price": row["close"],
+                "reason": f"KDJ L2 buy: J crossed above 0 (J={row['kdj_j']:.1f})",
+            })
+            _last_signal_type = "buy"
+
+        # L2: J-line crosses below 100 (extreme overbought reversal)
+        elif (
+            pd.notna(row.get("prev_j"))
+            and row["prev_j"] >= 100
+            and row["kdj_j"] < 100
+        ):
+            signals.append({
+                "timestamp": row.get("timestamp"),
+                "action": "sell",
+                "price": row["close"],
+                "reason": f"KDJ L2 sell: J crossed below 100 (J={row['kdj_j']:.1f})",
+            })
+            _last_signal_type = "sell"
 
     return signals
 
@@ -472,75 +526,94 @@ def bollinger_strategy(
     std: float = 2.0,
 ) -> List[Dict[str, Any]]:
     """
-    Bollinger Bands strategy.
+    Bollinger Bands strategy — 三类信号。
 
-    Generates BUY when price touches or crosses below the lower band,
-    and SELL when price touches or crosses above the upper band.
+    BUY:
+      L1: 收盘价从下轨下方反弹回下轨上方（超卖反弹）
+      L2: 收盘价在中轨下方且距下轨≤10%带宽，当日收阳（近下轨企稳）
+    SELL:
+      L1: 收盘价从上轨上方回落到上轨下方（超买回落）
+      L2: 收盘价在中轨上方且距上轨≤10%带宽，当日收阴（近上轨受阻）
 
     Args:
         data: DataFrame with a 'close' column.
         period: Rolling window period.
-        std: Number of standard deviations for the bands.
+        std: Number of standard deviations for the bands (1.5 = more signals, 2.0 = stricter).
 
     Returns:
         List of signal dicts.
     """
     import pandas as pd
     df = data.copy()
-    if len(df) < period + 1:
+    if len(df) < period + 2:
         return []
 
     df["bb_mid"] = df["close"].rolling(window=period).mean()
     df["bb_std"] = df["close"].rolling(window=period).std(ddof=0)
     df["bb_upper"] = df["bb_mid"] + std * df["bb_std"]
     df["bb_lower"] = df["bb_mid"] - std * df["bb_std"]
+    df["bb_bw"] = df["bb_upper"] - df["bb_lower"]
     df["prev_close"] = df["close"].shift(1)
+    df["prev_upper"] = df["bb_upper"].shift(1)
+    df["prev_lower"] = df["bb_lower"].shift(1)
 
     signals: List[Dict[str, Any]] = []
 
     for idx in df.iterrows():
         i = idx[0]
         row = idx[1]
-        if pd.isna(row.get("bb_lower")) or pd.isna(row.get("bb_upper")):
+        if pd.isna(row.get("bb_lower")) or pd.isna(row.get("bb_upper")) or pd.isna(row.get("bb_bw")):
+            continue
+        if row["bb_bw"] <= 0:
             continue
 
         prev_close = row["prev_close"]
         curr_close = row["close"]
+        bw = row["bb_bw"]
 
-        # Price crosses below lower band => oversold / buy
-        if prev_close >= row["bb_lower"] and curr_close < row["bb_lower"]:
+        # L1 buy: price bounces from below lower band
+        prev_lower = row["prev_lower"]
+        if pd.notna(prev_lower) and prev_close < prev_lower and curr_close >= row["bb_lower"]:
             signals.append({
                 "timestamp": row.get("timestamp"),
                 "action": "buy",
                 "price": curr_close,
-                "reason": f"Price touched lower band ({row['bb_lower']:.2f})",
+                "reason": f"BOLL L1 buy: bounce off lower band (lower={row['bb_lower']:.2f})",
             })
 
-        # Price crosses above upper band => overbought / sell
-        if prev_close <= row["bb_upper"] and curr_close > row["bb_upper"]:
+        # L2 buy: near lower band, below mid, and rising
+        elif curr_close > row["bb_lower"] and curr_close < row["bb_mid"]:
+            dist_pct = (curr_close - row["bb_lower"]) / bw
+            if dist_pct < 0.10 and curr_close > prev_close:
+                signals.append({
+                    "timestamp": row.get("timestamp"),
+                    "action": "buy",
+                    "price": curr_close,
+                    "reason": f"BOLL L2 buy: near lower band + rising (dist={dist_pct:.1%})",
+                })
+
+        # L1 sell: price pulls back from above upper band
+        prev_upper = row["prev_upper"]
+        if pd.notna(prev_upper) and prev_close > prev_upper and curr_close <= row["bb_upper"]:
             signals.append({
                 "timestamp": row.get("timestamp"),
                 "action": "sell",
                 "price": curr_close,
-                "reason": f"Price touched upper band ({row['bb_upper']:.2f})",
+                "reason": f"BOLL L1 sell: pullback from upper band (upper={row['bb_upper']:.2f})",
             })
 
-        # Price bounces from lower band
-        if (
-            prev_close <= row["bb_lower"]
-            and curr_close > row["bb_lower"]
-            and curr_close < row["bb_mid"]
-        ):
-            signals.append({
-                "timestamp": row.get("timestamp"),
-                "action": "buy",
-                "price": curr_close,
-                "reason": f"Bounce from lower band ({row['bb_lower']:.2f})",
-            })
+        # L2 sell: near upper band, above mid, and falling
+        elif curr_close < row["bb_upper"] and curr_close > row["bb_mid"]:
+            dist_pct = (row["bb_upper"] - curr_close) / bw
+            if dist_pct < 0.10 and curr_close < prev_close:
+                signals.append({
+                    "timestamp": row.get("timestamp"),
+                    "action": "sell",
+                    "price": curr_close,
+                    "reason": f"BOLL L2 sell: near upper band + falling (dist={dist_pct:.1%})",
+                })
 
     return signals
-
-
 def grid_strategy(
     data: pd.DataFrame,
     grid_levels: int = 10,
@@ -591,7 +664,7 @@ def grid_strategy(
 
         for gp in grid_prices[1:-1]:  # skip outermost bounds
             # Price crosses grid level upward -> sell
-            if prev_price <= gp <= curr_price:
+            if prev_price < gp <= curr_price:
                 signals.append({
                     "timestamp": row.get("timestamp"),
                     "action": "sell",
@@ -599,7 +672,7 @@ def grid_strategy(
                     "reason": f"Grid sell at {gp:.2f}",
                 })
             # Price crosses grid level downward -> buy
-            elif curr_price <= gp <= prev_price:
+            elif curr_price < gp <= prev_price:
                 signals.append({
                     "timestamp": row.get("timestamp"),
                     "action": "buy",
@@ -609,6 +682,193 @@ def grid_strategy(
 
         prev_price = curr_price
 
+    return signals
+
+
+def martingale_strategy(
+    data: pd.DataFrame,
+    base_qty: int = 100,
+    max_multiplier: int = 8,
+) -> List[Dict[str, Any]]:
+    """
+    Martingale strategy — doubles position after losses.
+
+    Uses MA crossover (5/20) as the base signal. After a losing trade,
+    the position size doubles (up to max_multiplier). After a win, resets
+    to base_qty.
+
+    Returns signals with a `multiplier` field indicating position sizing.
+    """
+    df = data.copy()
+    if len(df) < 21:
+        return []
+
+    df["ma5"] = df["close"].rolling(5).mean()
+    df["ma20"] = df["close"].rolling(20).mean()
+    df["prev_ma5"] = df["ma5"].shift(1)
+    df["prev_ma20"] = df["ma20"].shift(1)
+
+    signals: List[Dict[str, Any]] = []
+    multiplier = 1
+    last_signal_action = None
+    last_entry_price = 0.0
+
+    for idx in df.iterrows():
+        i = idx[0]
+        row = idx[1]
+        if pd.isna(row.get("prev_ma5")) or pd.isna(row.get("prev_ma20")):
+            continue
+
+        if row["prev_ma5"] <= row["prev_ma20"] and row["ma5"] > row["ma20"]:
+            action = "buy"
+            if last_signal_action == "sell" and row["close"] < last_entry_price:
+                multiplier = min(multiplier * 2, max_multiplier)
+            else:
+                multiplier = 1
+            last_signal_action = "buy"
+            last_entry_price = row["close"]
+            signals.append({
+                "timestamp": row.get("timestamp"),
+                "action": action,
+                "price": row["close"],
+                "reason": f"Martingale buy (multiplier={multiplier}x, qty={base_qty * multiplier})",
+                "multiplier": multiplier,
+            })
+
+        elif row["prev_ma5"] >= row["prev_ma20"] and row["ma5"] < row["ma20"]:
+            action = "sell"
+            if last_signal_action == "buy" and row["close"] > last_entry_price:
+                multiplier = 1  # reset after win
+            last_signal_action = "sell"
+            last_entry_price = row["close"]
+            signals.append({
+                "timestamp": row.get("timestamp"),
+                "action": action,
+                "price": row["close"],
+                "reason": f"Martingale sell (multiplier={multiplier}x)",
+                "multiplier": multiplier,
+            })
+
+    return signals
+
+
+def trend_break_strategy(
+    data: pd.DataFrame,
+    lookback: int = 20,
+) -> List[Dict[str, Any]]:
+    """
+    Trend break strategy — Donchian channel breakout.
+
+    BUY when price breaks above the highest high of the past *lookback* bars.
+    SELL when price breaks below the lowest low of the past *lookback* bars.
+    """
+    df = data.copy()
+    if len(df) < lookback + 1:
+        return []
+
+    df["donchian_high"] = df["high"].rolling(window=lookback).max().shift(1)
+    df["donchian_low"] = df["low"].rolling(window=lookback).min().shift(1)
+
+    signals: List[Dict[str, Any]] = []
+
+    for idx in df.iterrows():
+        i = idx[0]
+        row = idx[1]
+        if pd.isna(row.get("donchian_high")) or pd.isna(row.get("donchian_low")):
+            continue
+
+        if row["close"] > row["donchian_high"]:
+            signals.append({
+                "timestamp": row.get("timestamp"),
+                "action": "buy",
+                "price": row["close"],
+                "reason": f"Trend break buy (high={row['donchian_high']:.2f}, lookback={lookback})",
+            })
+
+        elif row["close"] < row["donchian_low"]:
+            signals.append({
+                "timestamp": row.get("timestamp"),
+                "action": "sell",
+                "price": row["close"],
+                "reason": f"Trend break sell (low={row['donchian_low']:.2f}, lookback={lookback})",
+            })
+
+    return signals
+
+
+def _validate_strategy_code(tree: ast.AST) -> None:
+    """Scan custom strategy AST for sandbox-escape patterns. Raises ValueError on detection."""
+    DANGEROUS_BUILTINS = {"eval", "exec", "compile", "open", "__import__", "getattr", "setattr", "delattr"}
+    DUNDER_ATTRS = {
+        "__class__", "__bases__", "__mro__", "__subclasses__",
+        "__globals__", "__code__", "__func__", "__self__",
+        "__builtins__", "__builtin__", "__import__",
+        "__reduce__", "__reduce_ex__", "__getstate__", "__setstate__",
+        "__init__", "__new__", "__del__", "__dict__", "__module__",
+    }
+
+    for node in ast.walk(tree):
+        # Block import statements
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            raise ValueError("自定义策略代码不允许使用 import 语句")
+
+        # Block dangerous builtin calls (eval, exec, open, etc.)
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in DANGEROUS_BUILTINS:
+                raise ValueError(f"自定义策略代码不允许调用 {node.func.id}()")
+
+        # Block dunder attribute access (sandbox escape via __class__ / __mro__ etc.)
+        if isinstance(node, ast.Attribute):
+            if node.attr in DUNDER_ATTRS:
+                raise ValueError(f"自定义策略代码不允许访问 {node.attr}")
+
+        # Block direct reference to __builtins__
+        if isinstance(node, ast.Name) and node.id == "__builtins__":
+            raise ValueError("自定义策略代码不允许访问 __builtins__")
+
+
+def _exec_custom_strategy(
+    df: pd.DataFrame,
+    custom_code: str,
+    params: dict,
+) -> List[Dict[str, Any]]:
+    """
+    Execute user-supplied custom strategy code.
+
+    Executes *custom_code* in a sandboxed namespace with access to *df*
+    and *params*. The code must define a *generate_signals(df, params)*
+    function that returns a list of signal dicts.
+
+    AST pre-scan blocks sandbox escape patterns before exec().
+    """
+    try:
+        tree = ast.parse(custom_code, mode="exec")
+    except SyntaxError as e:
+        raise ValueError(f"自定义策略代码语法错误: {e}")
+    _validate_strategy_code(tree)
+
+    namespace: Dict[str, Any] = {}
+    restricted_builtins = {
+        "abs": abs, "all": all, "any": any, "bool": bool, "dict": dict,
+        "enumerate": enumerate, "float": float, "int": int, "len": len,
+        "list": list, "max": max, "min": min, "range": range, "round": round,
+        "sorted": sorted, "sum": sum, "tuple": tuple, "zip": zip,
+        "str": str, "print": print, "isinstance": isinstance,
+        "True": True, "False": False, "None": None,
+        "math": math, "np": np,
+    }
+
+    try:
+        exec(compile(tree, "<strategy>", "exec"), {"__builtins__": restricted_builtins}, namespace)
+    except Exception as e:
+        raise ValueError(f"自定义策略代码编译失败: {e}")
+
+    if "generate_signals" not in namespace:
+        raise ValueError("自定义策略代码必须定义 generate_signals(df, params) 函数")
+
+    signals = namespace["generate_signals"](df, params)
+    if not isinstance(signals, list):
+        raise ValueError("generate_signals 必须返回 signal dict 列表")
     return signals
 
 
@@ -689,8 +949,8 @@ async def get_strategy_templates() -> list[dict]:
         {"type": "kdj", "name": "KDJ", "description": "随机指标KDJ超买超卖策略", "default_params": {"n": 9, "k": 3, "d": 3}},
         {"type": "bollinger", "name": "布林带", "description": "布林带上下轨突破策略", "default_params": {"period": 20, "std": 2}},
         {"type": "grid", "name": "网格交易", "description": "设定价格区间网格低买高卖", "default_params": {"grid_levels": 10, "upper_price": 0, "lower_price": 0}},
-        {"type": "martingale", "name": "马丁格尔", "description": "亏损后加倍加仓的策略", "default_params": {"multiplier": 2, "max_levels": 5}},
-        {"type": "trend_break", "name": "趋势突破", "description": "突破近期高点/低点跟踪趋势", "default_params": {"lookback": 20}},
+        {"type": "martingale", "name": "马丁格尔", "description": "亏损加倍仓位,盈利重置基数", "default_params": {"base_quantity": 100, "max_multiplier": 8}},
+        {"type": "trend_break", "name": "趋势突破", "description": "Donchian通道突破策略", "default_params": {"lookback": 20}},
     ]
 
 
@@ -765,25 +1025,25 @@ CLASSIC_STRATEGIES = [
     {
         "type": "martingale",
         "name": "马丁格尔",
-        "description": "马丁格尔策略。每次亏损后在下次交易中加倍仓位，直到盈利后恢复初始仓位。高风险高回报，需要充足资金。",
-        "suitable_market": "单边行情",
+        "description": "基于MA交叉信号，亏损后加倍仓位、盈利后重置。借助趋势回归逐步摊平亏损，但需严格风控防止连续亏损导致指数级放大。",
+        "suitable_market": "震荡市",
         "params_description": {
-            "multiplier": "加仓倍数（默认2）",
-            "max_levels": "最大加仓层数（默认5）",
+            "base_quantity": "基础仓位（默认100）",
+            "max_multiplier": "最大倍数（默认8）",
         },
-        "default_params": {"multiplier": 2, "max_levels": 5},
-        "performance_metrics": {"win_rate": "~70%", "avg_return": "高", "max_drawdown": "极高"},
+        "default_params": {"base_quantity": 100, "max_multiplier": 8},
+        "performance_metrics": {"win_rate": "~40%", "avg_return": "较高风险", "max_drawdown": "高"},
     },
     {
         "type": "trend_break",
         "name": "趋势突破",
-        "description": "趋势跟踪突破策略。价格突破近期最高点时买入（向上突破），跌破近期最低点时卖出（向下突破）。适合有明显趋势的行情。",
+        "description": "Donchian通道突破策略。价格突破过去N根K线最高价时买入，跌破过去N根K线最低价时卖出。适合趋势启动阶段。",
         "suitable_market": "趋势市",
         "params_description": {
-            "lookback": "回溯周期（默认20）",
+            "lookback": "回看周期（默认20）",
         },
         "default_params": {"lookback": 20},
-        "performance_metrics": {"win_rate": "~40%", "avg_return": "高", "max_drawdown": "高"},
+        "performance_metrics": {"win_rate": "~45%", "avg_return": "中等偏高", "max_drawdown": "中等"},
     },
 ]
 
@@ -875,10 +1135,12 @@ def _kline_to_dataframe(kline_data: List[Dict[str, Any]]) -> pd.DataFrame:
     if df.empty:
         return df
 
-    # Normalise timestamp to datetime
+    # Normalise timestamp to datetime (auto-detect ms vs s)
     if "timestamp" in df.columns:
         if df["timestamp"].dtype in (np.int64, np.float64):
-            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s", utc=True)
+            sample = float(df["timestamp"].dropna().iloc[0]) if len(df) > 0 else 0
+            unit = "ms" if sample > 1e12 else "s"
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit=unit, utc=True)
         else:
             df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
 

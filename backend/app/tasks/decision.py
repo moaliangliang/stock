@@ -13,6 +13,7 @@ from sqlalchemy import select, func, desc, and_
 
 from app.core.celery_app import celery_app
 from app.core.database import SyncSessionLocal
+from app.core.redis import TaskLock
 from app.models.decision import (
     DecisionRecommendation,
     DecisionStatus,
@@ -25,24 +26,28 @@ from app.models.position import Position
 from app.models.risk import RiskRecord
 from app.models.user import User
 from app.services.data_provider import refresh_all_tickers, fetch_fundamental_data
-from app.services.decision import (
+from app.services.indicators import (
+    _calc_adx,
+    _rolling_mean,
+    _rolling_std,
+    _detect_regime,
+    _detect_regime_transition,
+    _calc_market_context_adjustment,
+)
+from app.services.scoring import (
     _calc_technical_score,
     _calc_sentiment_score,
     _calc_momentum_score,
     _calc_risk_score_sync,
     _calc_fundamental_score,
+    _score_to_recommendation,
+    _compute_dynamic_weights,
+)
+from app.services.decision import (
     _calc_target_stop,
     _build_reasoning,
     _klines_to_arrays,
-    _score_to_recommendation,
-    _detect_regime,
-    _detect_regime_transition,
-    _calc_market_context_adjustment,
     _get_weekly_data_sync,
-    _compute_dynamic_weights,
-    _calc_adx,
-    _rolling_mean,
-    _rolling_std,
 )
 
 
@@ -70,61 +75,69 @@ def generate_investment_decisions():
     if china_hour < 9 or china_hour > 15:
         return "Skipped: outside market hours"
 
-    logger.info(f"开始生成投资决策: {now}")
-    db = SyncSessionLocal()
+    with TaskLock("generate_investment_decisions", timeout=300) as acquired:
+        if not acquired:
+            return "Skipped: another instance is running"
 
-    try:
-        # Refresh latest prices
-        refresh_all_tickers(db)
-        db.flush()
+        logger.info(f"开始生成投资决策: {now}")
+        db = SyncSessionLocal()
 
-        # 只处理自选标的（is_watched=True）
-        from app.models.market_data import SymbolInfo
-        watched = list(db.execute(
-            select(SymbolInfo).where(SymbolInfo.is_watched == True, SymbolInfo.status == "active")
-        ).scalars().all())
-        symbols = [s.symbol for s in watched]
-        if not symbols:
-            return "No watched symbols"
+        try:
+            # Refresh latest prices
+            refresh_all_tickers(db)
+            db.flush()
 
-        users = list(db.execute(
-            select(User).where(User.is_active == True)
-        ).scalars().all())
+            from app.models.market_data import SymbolInfo
+            watched = list(db.execute(
+                select(SymbolInfo).where(SymbolInfo.is_watched == True, SymbolInfo.status == "active")
+            ).scalars().all())
+            symbols = [s.symbol for s in watched]
+            if not symbols:
+                return "No watched symbols"
 
-        total_generated = 0
-        for user in users:
-            for symbol in symbols[:10]:
-                try:
-                    decision = _generate_decision_sync(db, user, symbol)
-                    if decision:
-                        db.add(decision)
-                        db.flush()
-                        total_generated += 1
-                except Exception as exc:
-                    logger.warning(f"Decision failed for user={user.id} symbol={symbol}: {exc}")
-                    continue
+            users = list(db.execute(
+                select(User).where(User.is_active == True)
+            ).scalars().all())
 
-        # Expire old decisions
-        expired = list(db.execute(
-            select(InvestmentDecision).where(
-                InvestmentDecision.status == DecisionStatus.ACTIVE,
-                InvestmentDecision.valid_until < now,
-            )
-        ).scalars().all())
-        for d in expired:
-            d.status = DecisionStatus.EXPIRED
-            d.updated_at = now
+            tickers = {
+                t.symbol: t
+                for t in db.execute(select(Ticker)).scalars().all()
+            }
 
-        db.commit()
-        logger.info(f"决策生成完成: {total_generated} generated, {len(expired)} expired")
-        return f"Generated {total_generated} decisions, expired {len(expired)}"
+            total_generated = 0
+            for user in users:
+                for symbol in symbols[:10]:
+                    try:
+                        decision = _generate_decision_sync(db, user, symbol, tickers.get(symbol))
+                        if decision:
+                            db.add(decision)
+                            db.flush()
+                            total_generated += 1
+                    except Exception as exc:
+                        logger.warning(f"Decision failed for user={user.id} symbol={symbol}: {exc}")
+                        continue
 
-    except Exception as exc:
-        db.rollback()
-        logger.error(f"决策任务失败: {exc}")
-        return f"Error: {exc}"
-    finally:
-        db.close()
+            # Expire old decisions
+            expired = list(db.execute(
+                select(InvestmentDecision).where(
+                    InvestmentDecision.status == DecisionStatus.ACTIVE,
+                    InvestmentDecision.valid_until < now,
+                )
+            ).scalars().all())
+            for d in expired:
+                d.status = DecisionStatus.EXPIRED
+                d.updated_at = now
+
+            db.commit()
+            logger.info(f"决策生成完成: {total_generated} generated, {len(expired)} expired")
+            return f"Generated {total_generated} decisions, expired {len(expired)}"
+
+        except Exception as exc:
+            db.rollback()
+            logger.error(f"决策任务失败: {exc}")
+            return f"Error: {exc}"
+        finally:
+            db.close()
 
 
 def _ensure_fresh_klines_sync(db, symbol: str, interval: str):
@@ -195,8 +208,15 @@ def _ensure_fresh_klines_sync(db, symbol: str, interval: str):
         )
 
 
-def _generate_decision_sync(db, user: User, symbol: str):
-    """Generate a single InvestmentDecision synchronously (Celery context)."""
+def _generate_decision_sync(db, user: User, symbol: str, ticker=None):
+    """Generate a single InvestmentDecision synchronously (Celery context).
+
+    Args:
+        db: sync DB session.
+        user: user to generate decision for.
+        symbol: stock/ETF code.
+        ticker: pre-fetched Ticker object (optional, to avoid N+1 query).
+    """
 
     # Refresh stale kline data so prices are current
     _ensure_fresh_klines_sync(db, symbol, "1d")
@@ -212,10 +232,6 @@ def _generate_decision_sync(db, user: User, symbol: str):
 
     if len(klines_raw) < 20:
         return None
-
-    ticker = db.execute(
-        select(Ticker).where(Ticker.symbol == symbol)
-    ).scalar_one_or_none()
 
     data = _klines_to_arrays(klines_raw)
     kline_close = float(data["close"][-1])
@@ -406,96 +422,100 @@ def check_decision_outcomes():
     decision's valid window. Writes DecisionOutcome records.
     Runs every 30 minutes.
     """
-    now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(hours=20)
+    with TaskLock("check_decision_outcomes", timeout=600) as acquired:
+        if not acquired:
+            return "Skipped: another instance is running"
 
-    logger.info(f"开始检查决策结果: {now}")
-    db = SyncSessionLocal()
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(hours=20)
 
-    try:
-        # Find decisions that are active or executed and past their valid_until
-        decisions = list(db.execute(
-            select(InvestmentDecision).where(
-                and_(
-                    InvestmentDecision.status.in_([
-                        DecisionStatus.ACTIVE,
-                        DecisionStatus.EXECUTED,
-                    ]),
-                    InvestmentDecision.valid_until < cutoff,
-                    InvestmentDecision.valid_until > now - timedelta(days=7),
-                )
-            )
-        ).scalars().all())
+        logger.info(f"开始检查决策结果: {now}")
+        db = SyncSessionLocal()
 
-        outcomes_created = 0
-        for decision in decisions:
-            try:
-                # Check if outcome already exists
-                existing = db.execute(
-                    select(DecisionOutcome).where(
-                        DecisionOutcome.decision_id == decision.id
+        try:
+            # Find decisions that are active or executed and past their valid_until
+            decisions = list(db.execute(
+                select(InvestmentDecision).where(
+                    and_(
+                        InvestmentDecision.status.in_([
+                            DecisionStatus.ACTIVE,
+                            DecisionStatus.EXECUTED,
+                        ]),
+                        InvestmentDecision.valid_until < cutoff,
+                        InvestmentDecision.valid_until > now - timedelta(days=7),
                     )
-                ).scalar_one_or_none()
-                if existing:
+                )
+            ).scalars().all())
+
+            outcomes_created = 0
+            for decision in decisions:
+                try:
+                    # Check if outcome already exists
+                    existing = db.execute(
+                        select(DecisionOutcome).where(
+                            DecisionOutcome.decision_id == decision.id
+                        )
+                    ).scalar_one_or_none()
+                    if existing:
+                        continue
+
+                    outcome = _check_single_outcome(db, decision, now)
+                    if outcome:
+                        db.add(outcome)
+                        db.flush()
+                        outcomes_created += 1
+
+                        # Update decision status
+                        if outcome.hit_target or outcome.hit_stop:
+                            decision.status = DecisionStatus.EXECUTED
+                        else:
+                            decision.status = DecisionStatus.EXPIRED
+                        decision.updated_at = now
+
+                except Exception as exc:
+                    logger.warning(f"Outcome check failed for decision {decision.id}: {exc}")
                     continue
 
-                outcome = _check_single_outcome(db, decision, now)
-                if outcome:
-                    db.add(outcome)
-                    db.flush()
-                    outcomes_created += 1
+            # Data-quality audit: flag decisions whose target price is >50% off from real close
+            try:
+                active_decisions = db.execute(
+                    select(InvestmentDecision).where(
+                        InvestmentDecision.status == DecisionStatus.ACTIVE
+                    )
+                ).scalars().all()
+                expired_suspicious = 0
+                for d in active_decisions:
+                    last_close_row = db.execute(
+                        select(KLine.close)
+                        .where(KLine.symbol == d.symbol, KLine.interval == "1d")
+                        .order_by(KLine.timestamp.desc())
+                        .limit(1)
+                    ).scalar_one_or_none()
+                    if last_close_row and last_close_row > 0 and d.target_price:
+                        if abs(d.target_price - last_close_row) / last_close_row > 0.50:
+                            logger.warning(
+                                "可疑决策 #{} {}: 目标价 {:.2f} vs K线收盘 {:.2f} 偏差 {:.0f}%, 自动过期",
+                                d.id, d.symbol, d.target_price, last_close_row,
+                                abs(d.target_price - last_close_row) / last_close_row * 100
+                            )
+                            d.status = DecisionStatus.EXPIRED
+                            d.updated_at = now
+                            expired_suspicious += 1
+                if expired_suspicious > 0:
+                    logger.info("决策审计: {} 条活跃中 {} 条因数据异常被自动过期", len(active_decisions), expired_suspicious)
+            except Exception:
+                logger.debug("决策审计跳过: {}", exc_info=True)
 
-                    # Update decision status
-                    if outcome.hit_target or outcome.hit_stop:
-                        decision.status = DecisionStatus.EXECUTED
-                    else:
-                        decision.status = DecisionStatus.EXPIRED
-                    decision.updated_at = now
+            db.commit()
+            logger.info(f"决策结果检查完成: {outcomes_created} outcomes created")
+            return f"Checked {len(decisions)} decisions, {outcomes_created} outcomes created"
 
-            except Exception as exc:
-                logger.warning(f"Outcome check failed for decision {decision.id}: {exc}")
-                continue
-
-        # Data-quality audit: flag decisions whose target price is >50% off from real close
-        try:
-            active_decisions = db.execute(
-                select(InvestmentDecision).where(
-                    InvestmentDecision.status == DecisionStatus.ACTIVE
-                )
-            ).scalars().all()
-            expired_suspicious = 0
-            for d in active_decisions:
-                last_close_row = db.execute(
-                    select(KLine.close)
-                    .where(KLine.symbol == d.symbol, KLine.interval == "1d")
-                    .order_by(KLine.timestamp.desc())
-                    .limit(1)
-                ).scalar_one_or_none()
-                if last_close_row and last_close_row > 0 and d.target_price:
-                    if abs(d.target_price - last_close_row) / last_close_row > 0.50:
-                        logger.warning(
-                            "可疑决策 #{} {}: 目标价 {:.2f} vs K线收盘 {:.2f} 偏差 {:.0f}%, 自动过期",
-                            d.id, d.symbol, d.target_price, last_close_row,
-                            abs(d.target_price - last_close_row) / last_close_row * 100
-                        )
-                        d.status = DecisionStatus.EXPIRED
-                        d.updated_at = now
-                        expired_suspicious += 1
-            if expired_suspicious > 0:
-                logger.info("决策审计: {} 条活跃中 {} 条因数据异常被自动过期", len(active_decisions), expired_suspicious)
-        except Exception:
-            logger.debug("决策审计跳过: {}", exc_info=True)
-
-        db.commit()
-        logger.info(f"决策结果检查完成: {outcomes_created} outcomes created")
-        return f"Checked {len(decisions)} decisions, {outcomes_created} outcomes created"
-
-    except Exception as exc:
-        db.rollback()
-        logger.error(f"结果检查任务失败: {exc}")
-        return f"Error: {exc}"
-    finally:
-        db.close()
+        except Exception as exc:
+            db.rollback()
+            logger.error(f"结果检查任务失败: {exc}")
+            return f"Error: {exc}"
+        finally:
+            db.close()
 
 
 def _check_single_outcome(db, decision: InvestmentDecision, now: datetime):

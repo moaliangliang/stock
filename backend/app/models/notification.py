@@ -15,7 +15,7 @@ class Notification(Base):
     )
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, comment="用户ID")
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, comment="用户ID")
     type = Column(String(50), nullable=False, comment="通知类型: trade/risk/strategy/system")
     title = Column(String(200), nullable=False, comment="通知标题")
     content = Column(Text, nullable=True, comment="通知内容")

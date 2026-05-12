@@ -42,8 +42,8 @@ class Order(Base):
     )
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, comment="用户ID")
-    strategy_id = Column(Integer, ForeignKey("strategies.id"), nullable=True, comment="关联策略ID")
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, comment="用户ID")
+    strategy_id = Column(Integer, ForeignKey("strategies.id", ondelete="SET NULL"), nullable=True, comment="关联策略ID")
     order_id_exchange = Column(String(100), nullable=True, comment="交易所订单ID")
     symbol = Column(String(20), nullable=False, comment="标的代码")
     side = Column(SAEnum(OrderSide), nullable=False, comment="买卖方向")
@@ -78,7 +78,7 @@ class Trade(Base):
     )
 
     id = Column(Integer, primary_key=True, index=True)
-    order_id = Column(Integer, ForeignKey("orders.id"), nullable=False, comment="订单ID")
+    order_id = Column(Integer, ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, comment="订单ID")
     trade_id_exchange = Column(String(100), nullable=True, comment="交易所成交ID")
     symbol = Column(String(20), nullable=False, comment="标的代码")
     side = Column(SAEnum(OrderSide), nullable=False, comment="买卖方向")

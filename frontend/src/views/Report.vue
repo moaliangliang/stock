@@ -161,7 +161,7 @@ async function fetchReports() {
   try {
     const res = await reportApi.list()
     reports.value = res.data || []
-  } catch {
+  } catch (err) { console.error('Operation failed:', err); 
     ElMessage.error('加载报告列表失败')
   } finally {
     loading.value = false
@@ -189,7 +189,7 @@ async function fetchAlertLog() {
       prevPrices.value = oldPrices
     }
     alertLog.value = data
-  } catch {
+  } catch (err) { console.error('Operation failed:', err); 
     // ignore
   }
 }

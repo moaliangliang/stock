@@ -10,6 +10,7 @@ from app.core.deps import get_current_user
 from app.schemas.common import Response
 from app.models.user import User
 from app.models.risk import RiskRuleType, RiskAction
+from app.schemas.risk import RiskRuleCreate, RiskRuleUpdate
 from app.services.risk import (
     get_risk_rules,
     create_risk_rule,
@@ -35,24 +36,24 @@ async def list_risk_rules(
 
 @router.post("/rules", response_model=Response[dict])
 async def create_risk_rule_endpoint(
-    req: dict,
+    req: RiskRuleCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """创建风控规则"""
-    rule = await create_risk_rule(db, user_id=current_user.id, rule_data=req)
+    rule = await create_risk_rule(db, user_id=current_user.id, rule_data=req.model_dump())
     return Response(data=_rule_to_dict(rule), message="风控规则创建成功")
 
 
 @router.put("/rules/{rule_id}", response_model=Response[dict])
 async def update_risk_rule_endpoint(
     rule_id: int,
-    req: dict,
+    req: RiskRuleUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """更新风控规则"""
-    rule = await update_risk_rule(db, rule_id, req)
+    rule = await update_risk_rule(db, rule_id, req.model_dump(exclude_unset=True), user_id=current_user.id)
     if not rule:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="风控规则不存在")
     return Response(data=_rule_to_dict(rule), message="风控规则更新成功")
@@ -65,7 +66,7 @@ async def delete_risk_rule_endpoint(
     current_user: User = Depends(get_current_user),
 ):
     """删除风控规则"""
-    success = await delete_risk_rule(db, rule_id)
+    success = await delete_risk_rule(db, rule_id, user_id=current_user.id)
     if not success:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="风控规则不存在")
     return Response(message="风控规则已删除")

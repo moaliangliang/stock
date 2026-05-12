@@ -23,8 +23,17 @@ class UserCreate(BaseModel):
     role: UserRole = UserRole.VIEWER
 
 
+class UserSelfUpdate(BaseModel):
+    """用户自助更新（不含敏感字段）"""
+    email: Optional[str] = None
+    nickname: Optional[str] = None
+    password: Optional[str] = Field(None, min_length=6, max_length=100)
+    max_position_ratio: Optional[int] = None
+    max_daily_loss: Optional[int] = None
+
+
 class UserUpdate(BaseModel):
-    """更新用户"""
+    """管理员更新用户（含角色/状态控制）"""
     email: Optional[str] = None
     nickname: Optional[str] = None
     role: Optional[UserRole] = None

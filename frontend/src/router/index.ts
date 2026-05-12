@@ -40,7 +40,7 @@ const routes: RouteRecordRaw[] = [
         path: 'strategy',
         name: 'Strategy',
         component: () => import('@/views/Strategy.vue'),
-        meta: { title: '策略中心', icon: 'SetUp' },
+        meta: { title: '策略中心', icon: 'SetUp', requiresRole: 'trader' },
       },
       {
         path: 'backtest',
@@ -52,19 +52,19 @@ const routes: RouteRecordRaw[] = [
         path: 'trade',
         name: 'Trade',
         component: () => import('@/views/Trade.vue'),
-        meta: { title: '实盘交易', icon: 'Money' },
+        meta: { title: '实盘交易', icon: 'Money', requiresRole: 'trader' },
       },
       {
         path: 'risk',
         name: 'Risk',
         component: () => import('@/views/Risk.vue'),
-        meta: { title: '风控管理', icon: 'Warning' },
+        meta: { title: '风控管理', icon: 'Warning', requiresRole: 'trader' },
       },
       {
         path: 'decision',
         name: 'Decision',
         component: () => import('@/views/Decision.vue'),
-        meta: { title: '投资决策', icon: 'Opportunity' },
+        meta: { title: '投资决策', icon: 'Opportunity', requiresRole: 'trader' },
       },
       {
         path: 'dca',
@@ -87,18 +87,38 @@ const router = createRouter({
   routes,
 })
 
-// 路由守卫 - 认证检查
+// 路由守卫 - 认证检查 + 角色权限
 router.beforeEach((to, _from, next) => {
   const auth = useAuthStore()
   const app = useAppStore()
   app.routeLoading = true
+
+  // 1. 未登录访问需认证页面 → 跳转登录
   if (to.meta.requiresAuth !== false && !auth.isLoggedIn) {
     next('/login')
-  } else if (to.path === '/login' && auth.isLoggedIn) {
-    next('/dashboard')
-  } else {
-    next()
+    return
   }
+
+  // 2. 已登录访问登录页 → 跳转首页
+  if (to.path === '/login' && auth.isLoggedIn) {
+    next('/dashboard')
+    return
+  }
+
+  // 3. 角色权限检查
+  const requiredRole = to.meta.requiresRole as string | undefined
+  if (requiredRole && !auth.hasRole(requiredRole)) {
+    next('/dashboard')
+    return
+  }
+
+  // 4. admin 专属路由（预留扩展）
+  if (to.meta.requiresAdmin && !auth.isAdmin) {
+    next('/dashboard')
+    return
+  }
+
+  next()
 })
 
 router.afterEach(() => {

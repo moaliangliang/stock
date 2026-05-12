@@ -9,6 +9,9 @@ from passlib.context import CryptContext
 
 from app.core.config import settings
 
+# Minimum key length for HS256 (32 chars ≈ 256 bits entropy for a random key)
+_MIN_SECRET_KEY_LENGTH = 32
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 

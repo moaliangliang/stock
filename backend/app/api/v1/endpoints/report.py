@@ -8,10 +8,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from app.core.deps import get_current_user
+from app.models.user import User
 from app.schemas.common import Response
 
 router = APIRouter(prefix="/reports", tags=["分析报告"])
@@ -43,6 +45,7 @@ def _format_size(size: int) -> str:
 async def list_reports(
     keyword: Optional[str] = Query(None, description="搜索关键词"),
     file_type: Optional[str] = Query(None, description="文件类型: xlsx/csv/json/txt"),
+    current_user: User = Depends(get_current_user),
 ):
     """列出所有分析报告"""
     items = []
@@ -77,7 +80,10 @@ async def list_reports(
 
 
 @router.get("/download/{filename}")
-async def download_report(filename: str):
+async def download_report(
+    filename: str,
+    current_user: User = Depends(get_current_user),
+):
     """下载指定报告文件"""
     safe_path = (REPORT_DIR / filename).resolve()
     if not str(safe_path).startswith(str(REPORT_DIR.resolve())):
@@ -103,7 +109,9 @@ async def download_report(filename: str):
 
 
 @router.get("/alert-log")
-async def get_alert_log():
+async def get_alert_log(
+    current_user: User = Depends(get_current_user),
+):
     """获取买入信号提醒日志 + 当前最新价格"""
     result = {"content": "暂无买入信号日志", "updated": None, "current_prices": None}
 

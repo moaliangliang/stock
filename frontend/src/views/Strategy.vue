@@ -306,7 +306,7 @@ async function loadSymbols() {
   try {
     const res: any = await marketApi.getSymbols()
     symbolOptions.value = res.data || []
-  } catch {}
+  } catch (err) { console.error('Operation failed:', err); }
 }
 
 function showCreateDialog() {
@@ -374,7 +374,7 @@ async function toggleStatus(row: any) {
     await strategyApi.updateStrategy(row.id, { status: newStatus })
     ElMessage.success(newStatus === 'active' ? '策略已启用' : '策略已暂停')
     await loadStrategies()
-  } catch {}
+  } catch (err) { console.error('Operation failed:', err); }
 }
 
 async function deleteStrategy(id: number) {
@@ -382,7 +382,7 @@ async function deleteStrategy(id: number) {
     await strategyApi.deleteStrategy(id)
     ElMessage.success('策略已删除')
     await loadStrategies()
-  } catch {}
+  } catch (err) { console.error('Operation failed:', err); }
 }
 
 async function runRegressionTest() {

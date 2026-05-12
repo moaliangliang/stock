@@ -477,7 +477,7 @@ async function toggleWatch(symbol: string) {
       }
       marketApi.clearSymbolsCache()
     }
-  } catch { /* ignore */ }
+  } catch (err) { console.error('Operation failed:', err);  /* ignore */ }
 }
 
 // All known symbols from DB + localStorage (for dropdown options)
@@ -487,7 +487,7 @@ const allKnownSymbols = computed<string[]>(() => {
   try {
     const raw = localStorage.getItem('batch_symbols') || '[]'
     stored.push(...JSON.parse(raw))
-  } catch { /* ignore */ }
+  } catch (err) { console.error('Operation failed:', err);  /* ignore */ }
   // Merge, dedup, sort
   return [...new Set([...dbSymbols, ...stored])].sort()
 })
@@ -539,7 +539,7 @@ function persistNewSymbols() {
     const resolved = resolvedSymbols.value
     const merged = [...new Set([...existing, ...resolved])]
     localStorage.setItem('batch_symbols', JSON.stringify(merged))
-  } catch { /* ignore */ }
+  } catch (err) { console.error('Operation failed:', err);  /* ignore */ }
 }
 
 // Outcome lookup: decision_id -> outcome
@@ -605,7 +605,7 @@ async function copyReasoning(text: string) {
   try {
     await navigator.clipboard.writeText(text || '')
     ElMessage.success('已复制到剪贴板')
-  } catch {
+  } catch (err) { console.error('Operation failed:', err); 
     ElMessage.error('复制失败')
   }
 }
@@ -631,7 +631,7 @@ async function loadSummary() {
     if (res.code === 200) {
       Object.assign(summary, res.data)
     }
-  } catch {
+  } catch (err) { console.error('Operation failed:', err); 
     // ignore
   }
 }
@@ -647,7 +647,7 @@ async function loadOutcomeSummary() {
         outcomeMap.value[o.decision_id] = o
       }
     }
-  } catch {
+  } catch (err) { console.error('Operation failed:', err); 
     // ignore
   }
 }
@@ -692,7 +692,7 @@ async function handleGenerate() {
       loadSummary()
       loadDecisions()
     }
-  } catch {
+  } catch (err) { console.error('Operation failed:', err); 
     ElMessage.error('生成失败')
   } finally {
     generating.value = false
@@ -707,7 +707,7 @@ async function handleExecute(id: number) {
       loadDecisions()
       loadHistory()
     }
-  } catch {
+  } catch (err) { console.error('Operation failed:', err); 
     ElMessage.error('操作失败')
   }
 }
@@ -719,7 +719,7 @@ async function handleDismiss(id: number) {
       ElMessage.success('已忽略')
       loadDecisions()
     }
-  } catch {
+  } catch (err) { console.error('Operation failed:', err); 
     ElMessage.error('操作失败')
   }
 }
@@ -736,7 +736,7 @@ async function loadSymbolNames() {
         }
       }
     }
-  } catch {
+  } catch (err) { console.error('Operation failed:', err); 
     // ignore
   }
 }

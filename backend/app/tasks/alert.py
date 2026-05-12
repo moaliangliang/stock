@@ -7,21 +7,25 @@ from loguru import logger
 
 from app.core.celery_app import celery_app
 from app.core.database import SyncSessionLocal
+from app.core.redis import TaskLock
 
 
 @celery_app.task(queue="market")
 def check_price_alerts():
     """定时检测价格提醒"""
-    logger.info(f"开始检测价格提醒: {datetime.now(timezone.utc)}")
-    db = SyncSessionLocal()
-    try:
-        from app.services.alert import check_price_alerts as _check
-        count = _check(db)
-        db.commit()
-        if count:
-            logger.info(f"价格提醒检测完成，触发 {count} 条")
-    except Exception as e:
-        db.rollback()
-        logger.error(f"价格提醒检测失败: {e}")
-    finally:
-        db.close()
+    with TaskLock("check_price_alerts", timeout=30) as acquired:
+        if not acquired:
+            return {"skipped": "another instance is running"}
+        logger.info(f"开始检测价格提醒: {datetime.now(timezone.utc)}")
+        db = SyncSessionLocal()
+        try:
+            from app.services.alert import check_price_alerts as _check
+            count = _check(db)
+            db.commit()
+            if count:
+                logger.info(f"价格提醒检测完成，触发 {count} 条")
+        except Exception as e:
+            db.rollback()
+            logger.error(f"价格提醒检测失败: {e}")
+        finally:
+            db.close()

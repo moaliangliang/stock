@@ -19,7 +19,7 @@ class PriceAlert(Base):
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     symbol = Column(String(50), nullable=False, comment="标的代码")
     condition = Column(String(10), nullable=False, comment="触发条件: above/below")
     target_price = Column(Float, nullable=False, comment="目标价格")

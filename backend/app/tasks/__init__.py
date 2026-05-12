@@ -5,3 +5,4 @@ from app.tasks.alert import check_price_alerts
 from app.tasks.stock_push import run_stock_push
 from app.tasks.signal_scanner import run_signal_scanner
 from app.tasks.ma_monitor import run_ma_monitor
+from app.tasks.auto_close import check_stop_orders, close_expired_positions

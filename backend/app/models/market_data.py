@@ -67,6 +67,7 @@ class Ticker(Base):
     low_24h = Column(Float, nullable=True, comment="24小时最低")
     volume_24h = Column(Float, nullable=True, comment="24小时成交量")
     change_24h = Column(Float, nullable=True, comment="24小时涨跌幅(%)")
+    prev_close = Column(Float, nullable=True, comment="昨日收盘价")
     turnover_24h = Column(Float, nullable=True, comment="24小时成交额")
     data_source = Column(String(20), nullable=False, default="unknown", index=True,
                          comment="数据来源: eastmoney/sina/mock/unknown")

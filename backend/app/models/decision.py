@@ -2,7 +2,7 @@
 投资决策建议模型
 """
 from datetime import datetime, timezone
-from sqlalchemy import Boolean, Column, Integer, String, Float, DateTime, ForeignKey, Text, Enum as SAEnum, JSON
+from sqlalchemy import Boolean, Column, Integer, String, Float, DateTime, ForeignKey, Text, Enum as SAEnum, Index, JSON
 from sqlalchemy.orm import relationship
 import enum
 
@@ -35,7 +35,7 @@ class InvestmentDecision(Base):
     __tablename__ = "investment_decisions"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, comment="用户ID")
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, comment="用户ID")
     symbol = Column(String(20), nullable=False, comment="股票代码")
     recommendation = Column(SAEnum(DecisionRecommendation), nullable=False, comment="建议类型")
     confidence = Column(Integer, default=50, comment="置信度 0-100")
@@ -52,9 +52,12 @@ class InvestmentDecision(Base):
 class DecisionOutcome(Base):
     """决策结果追踪表 — 追踪每条投资决策的准确性"""
     __tablename__ = "decision_outcomes"
+    __table_args__ = (
+        Index("idx_decision_outcomes_symbol", "symbol"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
-    decision_id = Column(Integer, ForeignKey("investment_decisions.id"), unique=True, nullable=False, comment="关联决策ID")
+    decision_id = Column(Integer, ForeignKey("investment_decisions.id", ondelete="CASCADE"), unique=True, nullable=False, comment="关联决策ID")
     symbol = Column(String(20), nullable=False, comment="股票代码")
     recommendation = Column(String(20), nullable=False, comment="建议类型")
     confidence = Column(Integer, default=50, comment="置信度")

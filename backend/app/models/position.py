@@ -16,7 +16,7 @@ class Position(Base):
     )
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, comment="用户ID")
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, comment="用户ID")
     symbol = Column(String(20), nullable=False, comment="标的代码")
     quantity = Column(Float, default=0, comment="持仓数量")
     available_quantity = Column(Float, default=0, comment="可用数量")

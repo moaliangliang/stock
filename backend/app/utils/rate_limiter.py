@@ -1,16 +1,16 @@
 """
-简易内存限流中间件 — 基于 IP 的请求频率限制
+Redis 滑动窗口限流中间件 — 基于 IP 的请求频率限制
+多 Worker 共享 Redis，避免进程内字典导致的限流失效
 """
 import time
-from collections import defaultdict
-from typing import Dict, List, Tuple
+from typing import Tuple
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 
 class RateLimiterMiddleware:
-    """按 IP 限流：每窗口内最大请求数"""
+    """基于 Redis 的滑动窗口限流器，跨 Worker 一致"""
 
     def __init__(
         self,
@@ -23,7 +23,6 @@ class RateLimiterMiddleware:
         self.max_requests = max_requests
         self.window_seconds = window_seconds
         self.excluded_paths = excluded_paths
-        self._clients: Dict[str, List[float]] = defaultdict(list)
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http":
@@ -39,19 +38,34 @@ class RateLimiterMiddleware:
 
         client_ip = request.client.host if request.client else "unknown"
         now = time.time()
-        history = self._clients[client_ip]
-
-        # 清理窗口之前的记录
+        key = f"ratelimit:{client_ip}"
         cutoff = now - self.window_seconds
-        self._clients[client_ip] = [t for t in history if t > cutoff]
 
-        if len(self._clients[client_ip]) >= self.max_requests:
-            response = JSONResponse(
-                status_code=429,
-                content={"code": 429, "message": "请求过于频繁，请稍后再试", "data": None},
-            )
-            await response(scope, receive, send)
-            return
+        try:
+            from app.core.redis import get_sync_redis
+            r = get_sync_redis()
+            pipe = r.pipeline()
+            pipe.zremrangebyscore(key, 0, cutoff)   # remove old entries
+            pipe.zcard(key)                          # count current window
+            results = pipe.execute()
+            current_count = results[1] if len(results) > 1 else 0
 
-        self._clients[client_ip].append(now)
+            if current_count >= self.max_requests:
+                response = JSONResponse(
+                    status_code=429,
+                    content={"code": 429, "message": "请求过于频繁，请稍后再试", "data": None},
+                )
+                await response(scope, receive, send)
+                return
+
+            # Add current request timestamp and set expiry
+            pipe = r.pipeline()
+            pipe.zadd(key, {str(now): now})
+            pipe.expire(key, self.window_seconds + 10)
+            pipe.execute()
+
+        except Exception:
+            # Redis unavailable — fall through (fail open, don't block traffic)
+            pass
+
         await self.app(scope, receive, send)

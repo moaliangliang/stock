@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.deps import get_current_user, get_current_active_superuser
 from app.core.security import create_access_token
-from app.schemas.user import LoginRequest, UserCreate, UserUpdate, UserResponse, TokenResponse, PasswordChangeRequest, APIKeyCreate, APIKeyResponse
+from app.schemas.user import LoginRequest, UserCreate, UserUpdate, UserSelfUpdate, UserResponse, TokenResponse, PasswordChangeRequest, APIKeyCreate, APIKeyResponse
 from app.schemas.common import Response
 from app.services.auth import authenticate_user, create_user, get_user_by_id, get_users, update_user, change_password, create_api_key, get_api_keys
 from app.models.user import User
@@ -45,7 +45,7 @@ async def get_me(current_user: User = Depends(get_current_user)):
 
 @router.put("/me", response_model=Response[UserResponse])
 async def update_me(
-    req: UserUpdate,
+    req: UserSelfUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):

@@ -49,7 +49,7 @@ class APIKey(Base):
     __tablename__ = "api_keys"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, comment="用户ID")
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, comment="用户ID")
     exchange = Column(String(50), nullable=False, comment="交易所")
     api_key = Column(String(200), nullable=False, comment="API Key")
     secret_key = Column(String(500), nullable=False, comment="Secret Key")

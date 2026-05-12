@@ -8,8 +8,8 @@ from app.core.config import settings
 
 celery_app = Celery(
     "quant_tasks",
-    broker=settings.CELERY_BROKER_URL,
-    backend=settings.CELERY_RESULT_BACKEND,
+    broker=settings._celery_broker_url,
+    backend=settings._celery_result_backend,
     include=["app.tasks"],
 )
 
@@ -41,6 +41,12 @@ celery_app.conf.update(
         "price-alert-check": {
             "task": "app.tasks.alert.check_price_alerts",
             "schedule": 10.0,
+            "options": {"queue": "market"},
+        },
+        # 东方财富持仓同步（工作日 9:00-15:55 每5分钟）
+        "eastmoney-position-sync": {
+            "task": "app.tasks.market.sync_eastmoney_positions",
+            "schedule": crontab(minute="*/5", hour="9-15", day_of_week="1-5"),
             "options": {"queue": "market"},
         },
         # 持仓监控推送（工作日 9:00-15:55 每5分钟，脚本内部判断半小时节点推送）
@@ -77,6 +83,18 @@ celery_app.conf.update(
         "ma-cross-monitor": {
             "task": "app.tasks.ma_monitor.run_ma_monitor",
             "schedule": crontab(minute="30", hour="15", day_of_week="1-5"),
+            "options": {"queue": "market"},
+        },
+        # 止损单检查（每30秒）
+        "check-stop-orders": {
+            "task": "app.tasks.auto_close.check_stop_orders",
+            "schedule": 30.0,
+            "options": {"queue": "market"},
+        },
+        # 超5日持仓自动平仓（工作日15:00收盘后）
+        "close-expired-positions": {
+            "task": "app.tasks.auto_close.close_expired_positions",
+            "schedule": crontab(minute="0", hour="15", day_of_week="1-5"),
             "options": {"queue": "market"},
         },
     },

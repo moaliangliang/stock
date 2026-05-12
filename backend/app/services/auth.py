@@ -54,9 +54,9 @@ async def create_user(db: AsyncSession, user_data: dict) -> User:
         email=user_data["email"],
         hashed_password=get_password_hash(user_data["password"]),
         nickname=user_data.get("nickname"),
-        role=user_data.get("role", UserRole.VIEWER),
-        is_active=user_data.get("is_active", True),
-        is_superuser=user_data.get("is_superuser", False),
+        role=UserRole.VIEWER,  # always viewer on creation; admin promotes later
+        is_active=True,       # always active on creation; admin disables later
+        is_superuser=False,   # never superuser on creation
         max_position_ratio=user_data.get("max_position_ratio", 30),
         max_daily_loss=user_data.get("max_daily_loss", 5),
     )

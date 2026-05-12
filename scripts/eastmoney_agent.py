@@ -11,21 +11,15 @@
 
 默认监听 0.0.0.0:8520，建议只在局域网使用，务必配置防火墙限制外部访问。
 """
-import json
 import logging
 import os
-import sys
 import threading
-import time
-from pathlib import Path
 
 from flask import Flask, request, jsonify
 
 # ---------------------------------------------------------------------------
 # easytrader 初始化
 # ---------------------------------------------------------------------------
-# easytrader 的配置文件路径，用于存储登录状态等
-CONFIG_PATH = os.environ.get("EM_CONFIG_PATH", str(Path.home() / ".eastmoney_trader.json"))
 
 app = Flask(__name__)
 logger = logging.getLogger("eastmoney_agent")
@@ -48,11 +42,12 @@ def _get_trader():
         except ImportError:
             raise RuntimeError("请先安装 easytrader: pip install easytrader")
 
-        # 使用同花顺版东方财富（也支持 'eastmoney' 客户端）
-        client_type = os.environ.get("EM_CLIENT_TYPE", "ths")
-        _trader = easytrader.use(client_type)
-        _trader.prepare(CONFIG_PATH)
-        logger.info("easytrader 初始化完成，客户端类型: %s", client_type)
+        # 东方财富交易客户端底层是同花顺内核，统一用 ths
+        _trader = easytrader.use("ths")
+        # 新版 easytrader (>=0.23) 用 connect() 替代 prepare()
+        # 不传 exe_path，自动按窗口标题查找已登录的客户端
+        _trader.connect()
+        logger.info("easytrader 初始化完成，已连接东方财富客户端")
         return _trader
 
 
@@ -147,10 +142,8 @@ if __name__ == "__main__":
     启动前请确保：
       1. 东方财富交易客户端已打开并登录
       2. easytrader 已安装: pip install easytrader
-      3. 防火墙已限制仅局域网访问
 
     代理地址: http://{host}:{port}
-    配置路径: {CONFIG_PATH}
     """)
 
     # Flask 内置服务器仅适合开发/局域网，生产环境请用 waitress

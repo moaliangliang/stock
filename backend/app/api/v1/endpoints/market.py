@@ -209,6 +209,7 @@ async def symbols(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """获取标的信息列表"""
     data = await get_symbols(db, asset_type)
@@ -220,6 +221,7 @@ async def symbols(
 async def toggle_watched(
     symbol: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """切换标的的自选状态"""
     from sqlalchemy import update

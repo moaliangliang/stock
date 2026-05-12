@@ -1,6 +1,9 @@
 """
 回测接口 - 执行回测、回测历史查询"""
 from __future__ import annotations
+import hashlib
+import json
+import time
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +20,15 @@ from app.models.strategy import Strategy
 
 router = APIRouter(prefix="/backtest", tags=["回测分析"])
 
+# In-memory backtest result cache (TTL = 5 minutes)
+_cache: dict[str, tuple[float, dict]] = {}
+_CACHE_TTL = 300  # seconds
+
+
+def _cache_key(req: BacktestRequest) -> str:
+    raw = f"{req.strategy_id}|{req.symbol}|{req.interval}|{req.start_date}|{req.end_date}|{req.initial_capital}"
+    return hashlib.md5(raw.encode()).hexdigest()
+
 
 @router.post("/run", response_model=Response[BacktestResult])
 async def backtest_run(
@@ -24,7 +36,14 @@ async def backtest_run(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """执行回测"""
+    """执行回测（带5分钟缓存）"""
+    # Check cache
+    ck = _cache_key(req)
+    if ck in _cache:
+        cached_at, cached_result = _cache[ck]
+        if time.time() - cached_at < _CACHE_TTL:
+            return Response(data=cached_result, message="回测执行完成(cached)")
+
     # 获取策略
     stmt = select(Strategy).where(Strategy.id == req.strategy_id)
     result_set = await db.execute(stmt)
@@ -58,6 +77,11 @@ async def backtest_run(
         commission=req.commission,
         slippage=req.slippage,
     )
+    # Cache result
+    _cache[ck] = (time.time(), result)
+    # Limit cache size
+    if len(_cache) > 200:
+        _cache.pop(next(iter(_cache)))
     return Response(data=result, message="回测执行完成")
 
 

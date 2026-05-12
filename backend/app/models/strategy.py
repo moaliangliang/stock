@@ -35,7 +35,7 @@ class Strategy(Base):
     __tablename__ = "strategies"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, comment="用户ID")
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, comment="用户ID")
     name = Column(String(100), nullable=False, comment="策略名称")
     type = Column(SAEnum(StrategyType), nullable=False, comment="策略类型")
     description = Column(Text, nullable=True, comment="策略描述")
@@ -77,7 +77,7 @@ class StrategyRunLog(Base):
     )
 
     id = Column(Integer, primary_key=True, index=True)
-    strategy_id = Column(Integer, ForeignKey("strategies.id"), nullable=False, comment="策略ID")
+    strategy_id = Column(Integer, ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False, comment="策略ID")
     run_time = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), comment="运行时间")
     status = Column(String(20), default="success", comment="状态: success/error")
     message = Column(Text, nullable=True, comment="运行消息")

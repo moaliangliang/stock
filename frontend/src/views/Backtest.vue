@@ -159,7 +159,7 @@ onMounted(async () => {
     const [sRes, symRes] = await Promise.all([strategyApi.getStrategies(), marketApi.getSymbols()])
     strategies.value = (sRes as any).data || []
     symbols.value = (symRes as any).data || []
-  } catch {}
+  } catch (err) { console.error('Operation failed:', err); }
 })
 </script>
 

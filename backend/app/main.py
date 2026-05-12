@@ -3,7 +3,7 @@ FastAPI 主应用 - 全功能量化交易平台后端入口
 """
 import asyncio
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -11,6 +11,7 @@ from loguru import logger
 
 from app.core.config import settings
 from app.core.database import init_db, engine
+from app.core.deps import get_current_active_superuser
 from app.utils.logger import setup_logger
 from app.utils.token_usage import get_stats as get_token_usage_stats
 
@@ -25,10 +26,13 @@ async def lifespan(app: FastAPI):
     # 启动时
     setup_logger()
 
-    # 安全校验：SECRET_KEY 为空则拒绝启动
+    # 安全校验：SECRET_KEY 为空或过短则拒绝启动
     if not settings.SECRET_KEY:
         logger.error("❌ SECRET_KEY 未配置，请设置环境变量或在 .env 中配置")
         raise RuntimeError("SECRET_KEY 不能为空，拒绝启动以保护系统安全")
+    if len(settings.SECRET_KEY) < 32:
+        logger.error("❌ SECRET_KEY 长度不足 (需 >= 32 字符)")
+        raise RuntimeError("SECRET_KEY 长度必须 >= 32 字符")
 
     logger.info(f"🚀 {settings.APP_NAME} v{settings.APP_VERSION} 启动中...")
     await init_db()
@@ -117,8 +121,8 @@ async def health_check():
 
 
 @app.get("/api/v1/system/token-stats")
-async def token_stats():
-    """Skills API Token 使用量统计"""
+async def token_stats(current_user=Depends(get_current_active_superuser)):
+    """Skills API Token 使用量统计 (admin only)"""
     all_stats = get_token_usage_stats()
     # Ensure skills_api entry always exists for the frontend
     if isinstance(all_stats, list):

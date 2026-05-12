@@ -103,8 +103,10 @@ async def check_daily_loss(
     """
     Check whether the user has exceeded their maximum daily loss limit.
 
-    The daily loss is calculated as the sum of realised PnL from filled
-    orders today. A negative sum indicates a net loss.
+    Daily PnL is computed from two sources:
+    1. Position.day_pnl — daily price-movement impact on current holdings.
+    2. Realised PnL from sell orders filled today — for shares that were
+       sold (fully or partially), the gain/loss relative to cost basis.
 
     Args:
         db: Database session.
@@ -114,7 +116,6 @@ async def check_daily_loss(
         A dict with passed (bool), message (str), current_loss (float),
         and limit_value (float).
     """
-    # Get user's daily loss limit
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if user is None:
@@ -124,34 +125,95 @@ async def check_daily_loss(
     if max_loss_pct is None or max_loss_pct <= 0:
         return {"passed": True, "message": "Daily loss limit not set"}
 
-    # Calculate today's total portfolio value change
     today_start = datetime.now(timezone.utc).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
 
-    # Sum of realised PnL from today's trades
-    today_trades_result = await db.execute(
-        select(func.sum(Order.filled_quantity * (Order.avg_price - Order.price)))
+    # 1. Unrealised daily price-movement impact from current positions
+    positions_pnl_result = await db.execute(
+        select(func.sum(PositionModel.day_pnl))
+        .where(PositionModel.user_id == user_id)
+    )
+    unrealised_day_pnl = positions_pnl_result.scalar() or 0.0
+
+    # 2. Realised PnL from today's filled sell orders
+    sell_orders_result = await db.execute(
+        select(Order)
         .where(
             and_(
                 Order.user_id == user_id,
+                Order.side == OrderSide.SELL,
                 Order.status == OrderStatus.FILLED,
                 Order.updated_at >= today_start,
             )
         )
     )
-    today_pnl = today_trades_result.scalar() or 0.0
+    sell_orders = list(sell_orders_result.scalars().all())
 
-    # Calculate total investment as reference
-    total_investment_result = await db.execute(
-        select(func.sum(PositionModel.cost_price * PositionModel.quantity))
-        .where(PositionModel.user_id == user_id)
+    # Batch-load cost basis for all sell symbols in one round-trip each
+    sell_symbols = list({s.symbol for s in sell_orders if s.symbol})
+    # Positions map: symbol → cost_price
+    pos_map: dict[str, float] = {}
+    if sell_symbols:
+        pos_rows = await db.execute(
+            select(PositionModel.symbol, PositionModel.cost_price)
+            .where(
+                and_(
+                    PositionModel.user_id == user_id,
+                    PositionModel.symbol.in_(sell_symbols),
+                )
+            )
+        )
+        for row in pos_rows.all():
+            if row[1] and row[1] > 0:
+                pos_map[row[0]] = float(row[1])
+        # Buy avg map: symbol → avg cost
+        buy_rows = await db.execute(
+            select(Order.symbol, func.avg(Order.avg_price))
+            .where(
+                and_(
+                    Order.user_id == user_id,
+                    Order.symbol.in_(sell_symbols),
+                    Order.side == OrderSide.BUY,
+                    Order.status == OrderStatus.FILLED,
+                )
+            )
+            .group_by(Order.symbol)
+        )
+        buy_map: dict[str, float] = {row[0]: float(row[1]) for row in buy_rows.all() if row[1] and row[1] > 0}
+
+    realised_pnl = 0.0
+    for sell in sell_orders:
+        qty = float(sell.filled_quantity or 0)
+        sell_price = float(sell.avg_price or 0)
+        if qty <= 0 or sell_price <= 0:
+            continue
+        cost_per_share = pos_map.get(sell.symbol) or buy_map.get(sell.symbol)
+        if not cost_per_share or cost_per_share <= 0:
+            cost_per_share = sell_price
+        realised_pnl += qty * (sell_price - cost_per_share)
+
+    today_pnl = unrealised_day_pnl + realised_pnl
+
+    # Total equity = sum of position market values + estimated cash
+    positions_result = await db.execute(
+        select(PositionModel).where(PositionModel.user_id == user_id)
     )
-    total_investment = total_investment_result.scalar() or 1.0
-    if total_investment <= 0:
-        total_investment = 1.0
+    positions = list(positions_result.scalars().all())
+    total_market_value = sum(
+        (p.quantity or 0) * (p.current_price or 0) for p in positions
+    )
+    total_equity = total_market_value
+    if total_equity <= 0:
+        # No positions — no loss to check
+        return {
+            "passed": True,
+            "message": "Daily loss limit: no positions",
+            "current_loss": 0.0,
+            "limit_value": round(max_loss_pct / 100.0, 6),
+        }
 
-    loss_ratio = abs(today_pnl) / total_investment if today_pnl < 0 else 0.0
+    loss_ratio = abs(today_pnl) / total_equity if today_pnl < 0 else 0.0
     limit_ratio = max_loss_pct / 100.0
 
     if loss_ratio >= limit_ratio:
@@ -223,21 +285,29 @@ async def check_position_ratio(
         position.quantity * position.current_price if position else 0.0
     )
 
-    # Get total portfolio value (positions + cash approximation)
-    # Use total position value across all symbols as denominator
+    # Get total portfolio equity (positions + estimated cash)
     all_positions_result = await db.execute(
         select(PositionModel).where(PositionModel.user_id == user_id)
     )
     all_positions = list(all_positions_result.scalars().all())
-    total_position_value = sum(
-        p.quantity * p.current_price for p in all_positions
-    ) or 1.0
+    total_market_value = sum(
+        (p.quantity or 0) * (p.current_price or 0) for p in all_positions
+    )
+    total_equity = total_market_value
+    if total_equity <= 0:
+        # Empty portfolio — first position is always allowed
+        return {
+            "passed": True,
+            "message": "Position ratio limit: first position (empty portfolio)",
+            "current_ratio": 0.0,
+            "limit_value": round(limit_ratio, 6),
+        }
 
     # Calculate new position value after this order
     order_value = order_quantity * order_price
     new_position_value = current_position_value + order_value
 
-    new_ratio = new_position_value / total_position_value
+    new_ratio = new_position_value / total_equity
 
     if new_ratio > limit_ratio:
         return {
@@ -404,9 +474,11 @@ async def create_risk_rule(db: AsyncSession, user_id: Optional[int], rule_data: 
     return rule
 
 
-async def update_risk_rule(db: AsyncSession, rule_id: int, rule_data: dict) -> Optional[RiskRule]:
-    """更新风控规则"""
-    result = await db.execute(select(RiskRule).where(RiskRule.id == rule_id))
+async def update_risk_rule(db: AsyncSession, rule_id: int, rule_data: dict, user_id: int) -> Optional[RiskRule]:
+    """更新风控规则（仅允许所有者修改）"""
+    result = await db.execute(
+        select(RiskRule).where(RiskRule.id == rule_id, RiskRule.user_id == user_id)
+    )
     rule = result.scalar_one_or_none()
     if not rule:
         return None
@@ -421,9 +493,11 @@ async def update_risk_rule(db: AsyncSession, rule_id: int, rule_data: dict) -> O
     return rule
 
 
-async def delete_risk_rule(db: AsyncSession, rule_id: int) -> bool:
-    """删除风控规则"""
-    result = await db.execute(select(RiskRule).where(RiskRule.id == rule_id))
+async def delete_risk_rule(db: AsyncSession, rule_id: int, user_id: int) -> bool:
+    """删除风控规则（仅允许所有者删除）"""
+    result = await db.execute(
+        select(RiskRule).where(RiskRule.id == rule_id, RiskRule.user_id == user_id)
+    )
     rule = result.scalar_one_or_none()
     if not rule:
         return False

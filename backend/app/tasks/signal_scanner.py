@@ -23,6 +23,7 @@ from sqlalchemy import select
 from app.core.celery_app import celery_app
 from app.core.config import settings
 from app.core.database import SyncSessionLocal
+from app.core.redis import acquire_sync_lock, release_sync_lock
 from app.models.market_data import KLine, SymbolInfo
 from app.models.notification import Notification
 
@@ -340,6 +341,10 @@ def run_signal_scanner():
     if not _is_market_hours():
         return  # skip outside trading hours
 
+    lock_token = acquire_sync_lock("run_signal_scanner", timeout=360)
+    if not lock_token:
+        return {"skipped": "another instance is running"}
+
     logger.info(f"信号扫描开始: {datetime.now(timezone.utc)}")
 
     db = SyncSessionLocal()
@@ -491,3 +496,4 @@ def run_signal_scanner():
         raise
     finally:
         db.close()
+        release_sync_lock("run_signal_scanner", lock_token)

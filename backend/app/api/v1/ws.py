@@ -5,9 +5,11 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Dict
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
+from jose import jwt, JWTError
 from loguru import logger
 
+from app.core.config import settings
 from app.services.ws_manager import manager
 from app.core.database import async_session_factory
 from app.services.data_provider import arefresh_all_tickers
@@ -20,9 +22,49 @@ router = APIRouter()
 _prev_prices: Dict[str, float] = {}
 
 
+async def _ws_auth_from_token(websocket: WebSocket, token: str | None) -> int | None:
+    """Validate JWT token from first auth message. Returns user_id or None (and closes WS)."""
+    if not token:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Missing token")
+        return None
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+        user_id = payload.get("sub")
+        if user_id is None:
+            raise JWTError("Missing sub")
+        return int(user_id)
+    except (JWTError, ValueError):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid token")
+        return None
+
+
 @router.websocket("/ws/tickers")
 async def ticker_websocket(websocket: WebSocket):
-    """实时行情 WebSocket - 客户端连接后持续接收 ticker 推送"""
+    """实时行情 WebSocket - 客户端连接后持续接收 ticker 推送
+
+    Auth via first message: client sends {"type":"auth","token":"..."}
+    as the very first text frame. Token is never exposed in URL query params.
+    """
+    await websocket.accept()
+
+    # Authenticate via first message (token never in URL)
+    try:
+        raw = await asyncio.wait_for(websocket.receive_text(), timeout=10)
+    except asyncio.TimeoutError:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Auth timeout")
+        return
+
+    try:
+        import json as _json
+        msg = _json.loads(raw)
+        token = msg.get("token") if msg.get("type") == "auth" else None
+    except Exception:
+        token = None
+
+    user_id = await _ws_auth_from_token(websocket, token)
+    if user_id is None:
+        return
+
     await manager.connect(websocket)
     try:
         while True:

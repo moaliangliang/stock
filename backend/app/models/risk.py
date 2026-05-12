@@ -2,7 +2,7 @@
 风控系统模型 - 风控规则、风控记录
 """
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text, Enum as SAEnum, Index
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text, Enum as SAEnum, Index, JSON
 import enum
 
 from app.core.database import Base
@@ -34,14 +34,14 @@ class RiskRule(Base):
     )
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, comment="用户ID(null=全局规则)")
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, comment="用户ID(null=全局规则)")
     name = Column(String(100), nullable=False, comment="规则名称")
     rule_type = Column(SAEnum(RiskRuleType), nullable=False, comment="规则类型")
     action = Column(SAEnum(RiskAction), default=RiskAction.WARN, comment="触发动作")
     is_active = Column(Boolean, default=True, comment="是否启用")
 
     # 规则参数 (JSON)
-    params = Column(Text, nullable=True, comment="规则参数(JSON格式)")
+    params = Column(JSON, nullable=True, comment="规则参数(JSON格式)")
 
     # 适用标的（逗号分隔，空=全部）
     symbols = Column(String(500), nullable=True, comment="适用标的")
@@ -59,8 +59,8 @@ class RiskRecord(Base):
     )
 
     id = Column(Integer, primary_key=True, index=True)
-    rule_id = Column(Integer, ForeignKey("risk_rules.id"), nullable=True, comment="风控规则ID")
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, comment="用户ID")
+    rule_id = Column(Integer, ForeignKey("risk_rules.id", ondelete="SET NULL"), nullable=True, comment="风控规则ID")
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, comment="用户ID")
     symbol = Column(String(20), nullable=True, comment="关联标的")
     action = Column(SAEnum(RiskAction), nullable=False, comment="触发动作")
     trigger_value = Column(Float, nullable=True, comment="触发值")
