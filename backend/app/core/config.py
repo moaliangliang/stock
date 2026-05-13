@@ -80,6 +80,13 @@ class Settings(BaseSettings):
     # Bark 推送通知
     BARK_KEY: str = ""
 
+    # 邮箱通知 (SMTP)
+    SMTP_HOST: str = "smtp.163.com"
+    SMTP_PORT: int = 465
+    SMTP_USER: str = "maoliang84@163.com"
+    SMTP_PASS: str = ""
+    NOTIFY_EMAIL: str = "maoliang84@163.com"  # 接收通知的邮箱
+
     # 交叉校验（多渠道数据对比）
     CROSS_VALIDATION_ENABLED: bool = False  # 主开关：开启后同时从第二数据源拉取并对比
     QUOTE_PRICE_DISCREPANCY_THRESHOLD: float = 0.02   # 行情价格字段差异阈值（2%）
@@ -90,16 +97,17 @@ class Settings(BaseSettings):
     DISCREPANCY_CRITICAL_THRESHOLD: float = 0.05       # 差异 >=5% → critical
 
     # 交易
-    ORDER_EXECUTION_MODE: str = "sandbox"  # sandbox | eastmoney
+    ORDER_EXECUTION_MODE: str = "sandbox"  # sandbox | eastmoney (Windows代理) | eastmoney_direct (Cookie直连)
     EM_TRADE_AGENT_URL: str = "http://127.0.0.1:8520"  # Windows easytrader 代理地址
 
-    # 东方财富账号同步 (tradeapp.eastmoney.com 直接API)
-    EM_ACCOUNT_USERID: str = ""       # 用户ID (抓包Cookie获取)
+    # 东方财富账号同步 (jywgmix.18.cn 网页交易平台 API)
+    EM_ACCOUNT_COOKIE: str = ""       # 浏览器完整 Cookie 字符串（登录后 F12 → Console → copy(document.cookie)）
+    EM_ACCOUNT_USERID: str = ""       # 用户ID (从 jywgmix.18.cn 抓包获取)
     EM_ACCOUNT_CT_TOKEN: str = ""     # 客户端Token
     EM_ACCOUNT_UT_TOKEN: str = ""     # 用户Token
     EM_ACCOUNT_FUND_ACCOUNT: str = "" # 资金账号
     EM_ACCOUNT_SECUID: str = ""       # 实盘账户ID
-    EM_ACCOUNT_BASE_URL: str = "https://tradeapp.eastmoney.com"
+    EM_ACCOUNT_BASE_URL: str = "https://jywgmix.18.cn"
     EM_ACCOUNT_SYNC_ENABLED: bool = False  # 是否启用自动同步
     EM_ACCOUNT_SYNC_INTERVAL: int = 300    # 自动同步间隔(秒)，默认5分钟
     DEFAULT_MAX_POSITION_RATIO: float = 0.3
@@ -114,6 +122,13 @@ class Settings(BaseSettings):
     AUTO_TRADE_MAX_PER_ORDER: float = 50000  # 单笔自动交易最大金额（元）
     AUTO_TRADE_MAX_DAILY_ORDERS: int = 5     # 每日自动交易最大笔数
     AUTO_TRADE_POSITION_PCT: float = 0.1     # 单只股票自动交易仓位占比（相对总资金）
+
+    # 回测门禁：自动交易只允许经回测验证的标的，且信号须匹配最优策略
+    AUTO_TRADE_REQUIRE_BACKTEST: bool = True     # 是否要求标的必须经过回测
+    AUTO_TRADE_BACKTEST_MIN_ANNUAL_RETURN: float = 0.0    # 最低年化收益率
+    AUTO_TRADE_BACKTEST_MIN_WIN_RATE: float = 0.35        # 最低胜率
+    AUTO_TRADE_BACKTEST_MIN_PROFIT_FACTOR: float = 1.0    # 最低盈亏比
+    AUTO_TRADE_BACKTEST_MIN_TRADES: int = 8               # 最低交易次数
 
     # CORS
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000"

@@ -66,7 +66,7 @@ cat > "${TMPDIR}/config.json" << 'CONFIGJSON'
   "state_file": "__STATE_FILE__",
   "timestamp": "__TIMESTAMP__",
   "now_minutes": __NOW_MINUTES__,
-  "scheduled_times": [570, 600, 630, 660, 690, 780, 810, 840, 870, 900],
+  "scheduled_times": [570, 900],
   "schedule_tolerance": 2,
   "alert_threshold": 5.0,
   "alert_cooldown_hours": 2,

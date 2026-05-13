@@ -187,8 +187,11 @@ def run_backtest(
                 proceeds = qty * fill_price
                 total_proceeds = proceeds - proceeds * commission
 
+                # Allocate proportional buy-side commission
+                buy_comm_allocated = open_trade["fee"] * (qty / open_trade["quantity"])
+
                 cash += total_proceeds
-                pnl = total_proceeds - (qty * open_trade["entry_price"])
+                pnl = total_proceeds - (qty * open_trade["entry_price"]) - buy_comm_allocated
                 position -= qty
 
                 trades.append({
@@ -205,6 +208,7 @@ def run_backtest(
                     open_trade = None
                 else:
                     open_trade["quantity"] = position
+                    open_trade["fee"] -= buy_comm_allocated
 
     # Close any remaining position at the last price
     if position > 0 and len(df) > 0:
@@ -219,7 +223,8 @@ def run_backtest(
             cash += total_proceeds
 
             if open_trade is not None:
-                pnl = total_proceeds - (qty * open_trade["entry_price"])
+                buy_comm_allocated = open_trade["fee"] * (qty / open_trade["quantity"]) if open_trade["quantity"] > 0 else 0
+                pnl = total_proceeds - (qty * open_trade["entry_price"]) - buy_comm_allocated
                 trades.append({
                     "timestamp": int(last_row["timestamp"].timestamp()),
                     "action": "sell",
@@ -242,21 +247,23 @@ def run_backtest(
     if len(df) > 2:
         gaps = df["timestamp"].diff().dropna()
         median_gap_sec = gaps.median().total_seconds()
+        # A-shares: ~245 trading days × 4h/day = 980 trading hours/year
         if median_gap_sec >= 86400:         # daily
             periods_per_year = 245
         elif median_gap_sec >= 3600:        # hourly
-            periods_per_year = int(245 * 6.5)    # ~1592
+            periods_per_year = int(245 * 4)       # 980
         elif median_gap_sec >= 1800:        # 30-min
-            periods_per_year = int(245 * 6.5 * 2)
+            periods_per_year = int(245 * 4 * 2)
         elif median_gap_sec >= 900:         # 15-min
-            periods_per_year = int(245 * 6.5 * 4)
+            periods_per_year = int(245 * 4 * 4)
         elif median_gap_sec >= 300:         # 5-min
-            periods_per_year = int(245 * 6.5 * 12)
+            periods_per_year = int(245 * 4 * 12)
         else:                               # 1-min
-            periods_per_year = int(245 * 6.5 * 60)
+            periods_per_year = int(245 * 4 * 60)
         annual_return = (1 + total_return) ** (periods_per_year / len(df)) - 1
-    elif len(df) > 1:
-        annual_return = total_return  # not enough data to annualise
+    elif len(df) > 1 and len(df) <= 2:
+        # Only 1 period of data — estimate daily annualization if possible
+        annual_return = (1 + total_return) ** 245 - 1 if total_return > -1 else total_return
     else:
         annual_return = 0.0
 
@@ -306,15 +313,20 @@ def run_backtest(
 def _prepare_dataframe(kline_data: List[Dict[str, Any]]) -> pd.DataFrame:
     """Convert raw kline data to a sorted DataFrame with datetime index."""
     import pandas as pd
+    from datetime import datetime as dt_type
     if not kline_data:
         return pd.DataFrame()
 
     df = pd.DataFrame(kline_data)
 
     if "timestamp" in df.columns:
-        sample = float(df["timestamp"].dropna().iloc[0]) if len(df) > 0 else 0
-        unit = "ms" if sample > 1e12 else "s"
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit=unit, utc=True)
+        sample_val = df["timestamp"].dropna().iloc[0] if len(df) > 0 else 0
+        if isinstance(sample_val, (dt_type, pd.Timestamp)):
+            df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+        else:
+            sample = float(sample_val)
+            unit = "ms" if sample > 1e12 else "s"
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit=unit, utc=True)
 
     for col in ["open", "high", "low", "close", "volume"]:
         if col in df.columns:
@@ -406,6 +418,126 @@ def _empty_result(initial_capital: float) -> Dict[str, Any]:
         "equity_curve": [],
         "trades": [],
     }
+
+
+# Signal-type → backtest strategy mapping (for auto-trade gate)
+_SIGNAL_TO_STRATEGY = {
+    "KDJ超卖金叉": "kdj",
+    "KDJ金叉": "kdj",
+    "MA金叉": "ma_cross",
+    "MACD底背离": "macd",
+}
+
+
+def get_best_strategy_for_symbol(symbol: str) -> Optional[Dict[str, Any]]:
+    """Query backtest_results for the best strategy for a given symbol.
+
+    Returns the row with highest annual_return, or None if no results exist.
+    """
+    from app.core.database import SyncSessionLocal
+    from app.models.backtest import BacktestResult as BR
+
+    db = SyncSessionLocal()
+    try:
+        rows = db.execute(
+            select(BR).where(BR.symbol == symbol).order_by(BR.annual_return.desc())
+        ).scalars().all()
+    finally:
+        db.close()
+
+    if not rows:
+        return None
+
+    best = rows[0]
+    return {
+        "symbol": best.symbol,
+        "strategy_type": best.strategy_type,
+        "strategy_params": best.strategy_params,
+        "annual_return": best.annual_return,
+        "total_return": best.total_return,
+        "max_drawdown": best.max_drawdown,
+        "sharpe_ratio": best.sharpe_ratio,
+        "win_rate": best.win_rate,
+        "total_trades": best.total_trades,
+        "profit_factor": best.profit_factor,
+    }
+
+
+def check_backtest_gate(symbol: str) -> Dict[str, Any]:
+    """Check whether a symbol passes the backtest quality gate for auto-trade.
+
+    Returns:
+        {passed: bool, reason: str, best_strategy: str|None, metrics: dict|None}
+    """
+    from app.core.config import settings
+
+    if not settings.AUTO_TRADE_REQUIRE_BACKTEST:
+        return {"passed": True, "reason": "回测门禁未启用", "best_strategy": None, "metrics": None}
+
+    best = get_best_strategy_for_symbol(symbol)
+    if best is None:
+        return {"passed": False, "reason": f"{symbol} 无回测记录，禁止自动交易", "best_strategy": None, "metrics": None}
+
+    # Quality thresholds
+    min_annual = settings.AUTO_TRADE_BACKTEST_MIN_ANNUAL_RETURN
+    min_win = settings.AUTO_TRADE_BACKTEST_MIN_WIN_RATE
+    min_pf = settings.AUTO_TRADE_BACKTEST_MIN_PROFIT_FACTOR
+    min_trades = settings.AUTO_TRADE_BACKTEST_MIN_TRADES
+
+    failures = []
+    if best["annual_return"] < min_annual:
+        failures.append(f"年化收益{best['annual_return']:.1%} < {min_annual:.0%}")
+    if best["win_rate"] < min_win:
+        failures.append(f"胜率{best['win_rate']:.1%} < {min_win:.0%}")
+    if best["profit_factor"] < min_pf:
+        failures.append(f"盈亏比{best['profit_factor']:.1f} < {min_pf:.1f}")
+    if best["total_trades"] < min_trades:
+        failures.append(f"交易次数{best['total_trades']} < {min_trades}")
+
+    if failures:
+        return {
+            "passed": False,
+            "reason": f"{symbol} 回测质量不达标: {'; '.join(failures)}",
+            "best_strategy": best["strategy_type"],
+            "metrics": best,
+        }
+
+    return {
+        "passed": True,
+        "reason": f"{symbol} 最优策略={best['strategy_type']} 年化={best['annual_return']:.1%}",
+        "best_strategy": best["strategy_type"],
+        "metrics": best,
+    }
+
+
+def signal_matches_strategy(signal_type: str, best_strategy: str) -> bool:
+    """Check if a signal type matches a backtest strategy."""
+    expected = _SIGNAL_TO_STRATEGY.get(signal_type)
+    return expected == best_strategy
+
+
+def filter_signals_by_backtest(
+    signals: List[Dict[str, Any]], symbol: str
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Filter signals to only keep those matching the stock's best backtest strategy.
+
+    Returns (filtered_signals, gate_result).
+    If gate not passed, returns (original_signals, gate_result) — caller should block trade.
+    """
+    gate = check_backtest_gate(symbol)
+    if not gate["passed"]:
+        return signals, gate
+
+    best_st = gate["best_strategy"]
+    filtered = [s for s in signals if signal_matches_strategy(s.get("type", ""), best_st)]
+
+    if not filtered:
+        gate["passed"] = False
+        gate["reason"] = (
+            f"{symbol} 最优策略={best_st}，但当前信号"
+            f"({', '.join(s.get('type','?') for s in signals)}) 不匹配，跳过"
+        )
+    return filtered, gate
 
 
 async def get_backtest_history(db, user_id: int, skip: int = 0, limit: int = 50, strategy_id: Optional[int] = None) -> list:

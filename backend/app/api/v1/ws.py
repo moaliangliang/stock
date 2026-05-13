@@ -70,7 +70,17 @@ async def ticker_websocket(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            await websocket.receive_text()
+            raw = await websocket.receive_text()
+            # Handle control messages (subscribe/unsubscribe)
+            try:
+                import json as _json
+                msg = _json.loads(raw)
+                if msg.get("type") == "subscribe":
+                    symbols = msg.get("symbols", ["*"])
+                    manager.subscribe(websocket, symbols)
+                # Ignore other message types (keepalive pings, etc.)
+            except Exception:
+                pass
     except WebSocketDisconnect:
         manager.disconnect(websocket)
     except Exception as e:

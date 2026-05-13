@@ -728,9 +728,21 @@ def _calc_target_stop(data: Dict[str, np.ndarray], composite: float) -> Tuple[Op
     if n < atr_period:
         return None, None
     last_price = float(close[-1])
-    diff_abs = np.abs(np.diff(close[-atr_period:]))
+    # True Range = max(high-low, |high-prev_close|, |low-prev_close|)
+    high_arr = data.get("high")
+    low_arr = data.get("low")
+    if high_arr is not None and low_arr is not None and len(high_arr) >= atr_period and len(low_arr) >= atr_period:
+        tr_values = []
+        for i in range(-atr_period, 0):
+            h, l = float(high_arr[i]), float(low_arr[i])
+            pc = float(close[i - 1]) if i > -len(close) else float(close[i])
+            tr = max(h - l, abs(h - pc), abs(l - pc))
+            tr_values.append(tr)
+        atr = float(np.mean(tr_values))
+    else:
+        diff_abs = np.abs(np.diff(close[-atr_period:]))
+        atr = float(np.mean(diff_abs)) if len(diff_abs) > 0 else last_price * atr_fallback
     atr_fallback = _cfg("target_stop", "atr_fallback_pct") or 0.02
-    atr = float(np.mean(diff_abs)) if len(diff_abs) > 0 else last_price * atr_fallback
     if math.isnan(atr) or atr <= 0:
         atr = last_price * atr_fallback
 

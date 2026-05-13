@@ -17,6 +17,10 @@ from app.services.risk import (
     update_risk_rule,
     delete_risk_rule,
     get_risk_records,
+    set_emergency_stop,
+    clear_emergency_stop,
+    get_emergency_stop_status,
+    get_risk_summary,
 )
 
 router = APIRouter(prefix="/risk", tags=["风控管理"])
@@ -41,7 +45,10 @@ async def create_risk_rule_endpoint(
     current_user: User = Depends(get_current_user),
 ):
     """创建风控规则"""
-    rule = await create_risk_rule(db, user_id=current_user.id, rule_data=req.model_dump())
+    try:
+        rule = await create_risk_rule(db, user_id=current_user.id, rule_data=req.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
     return Response(data=_rule_to_dict(rule), message="风控规则创建成功")
 
 
@@ -53,7 +60,10 @@ async def update_risk_rule_endpoint(
     current_user: User = Depends(get_current_user),
 ):
     """更新风控规则"""
-    rule = await update_risk_rule(db, rule_id, req.model_dump(exclude_unset=True), user_id=current_user.id)
+    try:
+        rule = await update_risk_rule(db, rule_id, req.model_dump(exclude_unset=True), user_id=current_user.id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
     if not rule:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="风控规则不存在")
     return Response(data=_rule_to_dict(rule), message="风控规则更新成功")
@@ -82,6 +92,52 @@ async def list_risk_records(
     """获取风控触发记录"""
     records = await get_risk_records(db, user_id=current_user.id, skip=skip, limit=limit)
     return Response(data=[_record_to_dict(r) for r in records])
+
+
+# ── 风险仪表板 ──────────────────────────────────────────────────────────────
+
+@router.get("/summary", response_model=Response[dict])
+async def get_risk_summary_endpoint(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """获取用户风险仪表板汇总"""
+    summary = await get_risk_summary(db, current_user.id)
+    return Response(data=summary)
+
+
+# ── 紧急熔断 ─────────────────────────────────────────────────────────────────
+
+@router.get("/emergency-stop", response_model=Response[dict])
+async def get_emergency_stop(
+    current_user: User = Depends(get_current_user),
+):
+    """查询紧急熔断状态"""
+    status = await get_emergency_stop_status()
+    return Response(data=status)
+
+
+@router.post("/emergency-stop", response_model=Response)
+async def activate_emergency_stop(
+    reason: str = Query("manual", description="熔断原因"),
+    current_user: User = Depends(get_current_user),
+):
+    """激活紧急熔断（阻断所有新订单）"""
+    ok = await set_emergency_stop(reason)
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="熔断激活失败")
+    return Response(message=f"紧急熔断已激活: {reason}")
+
+
+@router.delete("/emergency-stop", response_model=Response)
+async def deactivate_emergency_stop(
+    current_user: User = Depends(get_current_user),
+):
+    """解除紧急熔断"""
+    ok = await clear_emergency_stop()
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="熔断解除失败")
+    return Response(message="紧急熔断已解除")
 
 
 def _rule_to_dict(rule) -> dict:

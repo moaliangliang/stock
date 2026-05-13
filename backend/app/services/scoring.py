@@ -331,7 +331,9 @@ def _calc_technical_score(data: Dict[str, np.ndarray]) -> Dict[str, Any]:
         avg_gain = _wilder_ema(gain, 14)[-1]
         avg_loss = _wilder_ema(loss, 14)[-1]
         if not np.isnan(avg_gain) and not np.isnan(avg_loss):
-            if avg_loss == 0:
+            if avg_loss == 0 and avg_gain == 0:
+                rsi = 50.0  # no movement → neutral
+            elif avg_loss == 0:
                 rsi = 100.0
             else:
                 rs = avg_gain / avg_loss

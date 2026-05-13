@@ -425,7 +425,7 @@ def kdj_strategy(
     """
     KDJ (Stochastic Oscillator) strategy — 三级信号体系。
 
-    L1 BUY:  K/D 金叉 + K<30 (超卖区反弹，高置信度)
+    L1 BUY:  K/D 金叉 + K<20 (超卖区反弹，高置信度)
     L2 BUY:  J 从负值突破0 (极端超卖反转)
     L1 SELL: K/D 死叉 + K>70 (超买区回落，高置信度)
     L2 SELL: J 从>100跌破100 (极端超买反转)
@@ -466,11 +466,12 @@ def kdj_strategy(
         if pd.isna(row.get("prev_k")) or pd.isna(row.get("prev_d")):
             continue
 
-        # L1: K/D golden cross in oversold zone (K<30)
+        # L1: K/D golden cross in oversold zone (K<20)
         if (
             row["prev_k"] <= row["prev_d"]
             and row["kdj_k"] > row["kdj_d"]
-            and row["kdj_k"] < 30
+            and row["kdj_k"] < 20
+            and _last_signal_type != "buy"
         ):
             signals.append({
                 "timestamp": row.get("timestamp"),
@@ -480,11 +481,12 @@ def kdj_strategy(
             })
             _last_signal_type = "buy"
 
-        # L1: K/D death cross in overbought zone (K>70)
+        # L1: K/D death cross in overbought zone (K>80)
         elif (
             row["prev_k"] >= row["prev_d"]
             and row["kdj_k"] < row["kdj_d"]
-            and row["kdj_k"] > 70
+            and row["kdj_k"] > 80
+            and _last_signal_type != "sell"
         ):
             signals.append({
                 "timestamp": row.get("timestamp"),
@@ -499,6 +501,7 @@ def kdj_strategy(
             pd.notna(row.get("prev_j"))
             and row["prev_j"] <= 0
             and row["kdj_j"] > 0
+            and _last_signal_type != "buy"
         ):
             signals.append({
                 "timestamp": row.get("timestamp"),
@@ -513,6 +516,7 @@ def kdj_strategy(
             pd.notna(row.get("prev_j"))
             and row["prev_j"] >= 100
             and row["kdj_j"] < 100
+            and _last_signal_type != "sell"
         ):
             signals.append({
                 "timestamp": row.get("timestamp"),
@@ -578,7 +582,7 @@ def bollinger_strategy(
 
         # L1 buy: price bounces from below lower band
         prev_lower = row["prev_lower"]
-        if pd.notna(prev_lower) and prev_close < prev_lower and curr_close >= row["bb_lower"]:
+        if pd.notna(prev_lower) and prev_close < prev_lower and curr_close >= row["bb_lower"] and curr_close > prev_close:
             signals.append({
                 "timestamp": row.get("timestamp"),
                 "action": "buy",
@@ -599,7 +603,7 @@ def bollinger_strategy(
 
         # L1 sell: price pulls back from above upper band
         prev_upper = row["prev_upper"]
-        if pd.notna(prev_upper) and prev_close > prev_upper and curr_close <= row["bb_upper"]:
+        if pd.notna(prev_upper) and prev_close > prev_upper and curr_close <= row["bb_upper"] and curr_close < prev_close:
             signals.append({
                 "timestamp": row.get("timestamp"),
                 "action": "sell",
@@ -644,14 +648,18 @@ def grid_strategy(
     Returns:
         List of signal dicts.
     """
+    import pandas as pd
     df = data.copy()
     if len(df) < 2:
         return []
 
-    if lower_price is None:
-        lower_price = df["close"].min() * 0.9
-    if upper_price is None:
-        upper_price = df["close"].max() * 1.1
+    if lower_price is None or upper_price is None:
+        warmup = max(len(df) // 3, 2)
+        warmup_data = df["close"].iloc[:warmup]
+        if lower_price is None:
+            lower_price = warmup_data.min() * 0.9
+        if upper_price is None:
+            upper_price = warmup_data.max() * 1.1
 
     if upper_price <= lower_price:
         return []
@@ -704,6 +712,7 @@ def martingale_strategy(
 
     Returns signals with a `multiplier` field indicating position sizing.
     """
+    import pandas as pd
     df = data.copy()
     if len(df) < 21:
         return []
@@ -716,7 +725,8 @@ def martingale_strategy(
     signals: List[Dict[str, Any]] = []
     multiplier = 1
     last_signal_action = None
-    last_entry_price = 0.0
+    last_buy_price = 0.0
+    last_sell_price = 0.0
 
     for idx in df.iterrows():
         i = idx[0]
@@ -726,12 +736,14 @@ def martingale_strategy(
 
         if row["prev_ma5"] <= row["prev_ma20"] and row["ma5"] > row["ma20"]:
             action = "buy"
-            if last_signal_action == "sell" and row["close"] < last_entry_price:
-                multiplier = min(multiplier * 2, max_multiplier)
-            else:
-                multiplier = 1
+            if last_signal_action == "sell":
+                # Double after a losing round-trip (sold below buy price)
+                if last_sell_price < last_buy_price:
+                    multiplier = min(multiplier * 2, max_multiplier)
+                else:
+                    multiplier = 1  # profit → reset
             last_signal_action = "buy"
-            last_entry_price = row["close"]
+            last_buy_price = row["close"]
             signals.append({
                 "timestamp": row.get("timestamp"),
                 "action": action,
@@ -742,10 +754,11 @@ def martingale_strategy(
 
         elif row["prev_ma5"] >= row["prev_ma20"] and row["ma5"] < row["ma20"]:
             action = "sell"
-            if last_signal_action == "buy" and row["close"] > last_entry_price:
-                multiplier = 1  # reset after win
+            last_sell_price = row["close"]
+            if last_signal_action == "buy" and row["close"] > last_buy_price:
+                multiplier = 1  # reset after profitable round-trip
+            # If sold at loss, multiplier stays — will double on next buy
             last_signal_action = "sell"
-            last_entry_price = row["close"]
             signals.append({
                 "timestamp": row.get("timestamp"),
                 "action": action,
@@ -767,6 +780,7 @@ def trend_break_strategy(
     BUY when price breaks above the highest high of the past *lookback* bars.
     SELL when price breaks below the lowest low of the past *lookback* bars.
     """
+    import pandas as pd
     df = data.copy()
     if len(df) < lookback + 1:
         return []

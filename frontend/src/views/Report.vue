@@ -69,7 +69,7 @@
         </el-table-column>
         <el-table-column prop="type" label="类型" width="80" align="center">
           <template #default="{ row }">
-            <el-tag :type="row.type === 'xlsx' ? 'success' : ''" size="small">{{ row.type.toUpperCase() }}</el-tag>
+            <el-tag :type="typeTagType(row.type)" size="small">{{ row.type.toUpperCase() }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="size_display" label="大小" width="100" align="right" sortable />
@@ -84,7 +84,7 @@
       </el-table>
 
       <div class="pagination-bar">
-        <span class="total-info">共 {{ filteredReports.length }} 个报告（仅显示 MD / XLSX）</span>
+        <span class="total-info">共 {{ filteredReports.length }} 个报告（MD / XLSX / TXT / CSV / JSON）</span>
       </div>
     </el-card>
   </div>
@@ -145,7 +145,7 @@ function priceChangeClass(code: string): string {
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 
-const allowedTypes = ['md', 'xlsx']
+const allowedTypes = ['md', 'xlsx', 'txt', 'csv', 'json']
 
 const filteredReports = computed(() => {
   let list = reports.value.filter(r => allowedTypes.includes(r.type))
@@ -192,6 +192,11 @@ async function fetchAlertLog() {
   } catch (err) { console.error('Operation failed:', err); 
     // ignore
   }
+}
+
+function typeTagType(type: string): string {
+  const map: Record<string, string> = { xlsx: 'success', txt: '', csv: 'warning', json: 'info', md: '' }
+  return map[type] || ''
 }
 
 function onSearch() {

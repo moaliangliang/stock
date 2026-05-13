@@ -294,7 +294,9 @@ def _detect_rsi_divergence(close: np.ndarray, period: int = 14, n: int = 30) -> 
     rsi = np.full_like(close, 50.0, dtype=float)
     for i in range(len(close)):
         if not np.isnan(avg_gain[i]) and not np.isnan(avg_loss[i]):
-            if avg_loss[i] == 0:
+            if avg_loss[i] == 0 and avg_gain[i] == 0:
+                rsi[i] = 50.0  # no movement → neutral
+            elif avg_loss[i] == 0:
                 rsi[i] = 100.0
             else:
                 rs = avg_gain[i] / avg_loss[i]

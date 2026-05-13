@@ -24,6 +24,7 @@ from app.services.trade import (
     create_or_update_position,
     import_positions_from_excel,
     sync_positions_from_eastmoney,
+    sync_orders_from_eastmoney,
 )
 
 router = APIRouter(prefix="/trade", tags=["实盘交易"])
@@ -150,6 +151,19 @@ async def sync_positions_endpoint(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     return Response(data=result, message=f"同步完成: 新建 {result['created']}, 更新 {result['updated']}, 共 {result['total']} 条")
+
+
+@router.post("/orders/sync", response_model=Response[dict])
+async def sync_orders_endpoint(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """从东方财富同步今日委托状态"""
+    try:
+        result = await sync_orders_from_eastmoney(db, current_user.id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return Response(data=result, message=f"委托同步完成: 更新 {result['updated']} 条, 新增成交 {result['trades_added']} 条")
 
 
 @router.get("/trades", response_model=Response[List[TradeResponse]])

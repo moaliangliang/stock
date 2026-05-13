@@ -152,3 +152,143 @@ class EastMoneyTradeAdapter(ExchangeAdapter):
                 "market_value": data.get("market_value", 0),
             }
         return {"total_balance": 0, "available_balance": 0}
+
+
+class EastMoneyDirectAdapter(ExchangeAdapter):
+    """东方财富直连交易适配器 — Cookie 直连 jywgmix.18.cn，无需 Windows 代理"""
+
+    def __init__(self, timeout: int = 15):
+        self._timeout = timeout
+        self._client = None
+
+    @property
+    def client(self):
+        if self._client is None:
+            from app.utils.eastmoney_account_client import EastMoneyAccountClient
+            self._client = EastMoneyAccountClient.from_settings()
+        return self._client
+
+    # ------------------------------------------------------------------
+    # 行情接口 — 走数据源服务
+    # ------------------------------------------------------------------
+
+    async def get_ticker(self, symbol: str) -> Dict:
+        from app.services.data_provider import fetch_real_klines
+        from app.core.market_constants import BASE_PRICES
+
+        klines = fetch_real_klines(symbol, "1d")
+        if klines and len(klines) > 0:
+            latest = klines[-1]
+            return {
+                "symbol": symbol,
+                "last_price": latest["close"],
+                "bid": latest["close"] * 0.999,
+                "ask": latest["close"] * 1.001,
+                "volume_24h": latest.get("volume", 0),
+            }
+        base = BASE_PRICES.get(symbol, 100.0)
+        return {"symbol": symbol, "last_price": base}
+
+    async def get_klines(self, symbol: str, interval: str, limit: int = 100) -> List[Dict]:
+        from app.services.data_provider import fetch_real_klines
+        data = fetch_real_klines(symbol, interval)
+        if data:
+            return data[-limit:]
+        return []
+
+    # ------------------------------------------------------------------
+    # 交易接口 — 直连 jywgmix.18.cn
+    # ------------------------------------------------------------------
+
+    async def create_order(
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        quantity: float,
+        price: Optional[float] = None,
+    ) -> Dict:
+        """实盘下单"""
+        side_cn = "buy" if side in ("buy", "BUY") else "sell"
+        trade_type = "0a" if order_type in ("limit", "LIMIT") else "0b"
+
+        # Try to get stock name from positions data
+        stock_name = ""
+        try:
+            positions = await self.client.get_positions()
+            for p in positions:
+                if p.get("symbol") == symbol:
+                    stock_name = p.get("name", "")
+                    break
+        except Exception:
+            pass
+
+        result = await self.client.submit_order(
+            symbol=symbol,
+            side=side_cn,
+            price=price or 0,
+            amount=int(quantity),
+            trade_type=trade_type,
+            stock_name=stock_name,
+        )
+        return {
+            "order_id": result.get("entrust_no", ""),
+            "entrust_no": result.get("entrust_no", ""),
+            "status": "pending",
+            "filled_quantity": 0,
+            "avg_price": price or 0,
+            "fee": 0,
+        }
+
+    async def cancel_order(self, symbol: str, order_id: str) -> Dict:
+        """撤单"""
+        await self.client.cancel_order(order_id)
+        return {"order_id": order_id, "status": "canceled"}
+
+    async def get_order(self, symbol: str, order_id: str) -> Dict:
+        """查询委托"""
+        try:
+            orders = await self.client.query_today_orders()
+            for o in orders:
+                if str(o.get("entrust_no")) == str(order_id):
+                    return o
+        except Exception:
+            pass
+        return {"status": "not_found"}
+
+    async def get_position(self, symbol: str = "") -> Dict:
+        """查询持仓"""
+        from app.utils.eastmoney_account_client import _to_raw_code
+        try:
+            positions = await self.client.get_positions()
+        except Exception as e:
+            logger.warning("获取东方财富持仓失败: %s", e)
+            return {"symbol": symbol, "quantity": 0, "available": 0}
+
+        raw = _to_raw_code(symbol) if symbol else ""
+        if raw and positions:
+            for p in positions:
+                if p.get("symbol", "").replace(".SH", "").replace(".SZ", "") == raw:
+                    return {
+                        "symbol": symbol,
+                        "quantity": p.get("quantity", 0),
+                        "available": p.get("available_quantity", 0),
+                        "cost_price": p.get("cost_price", 0),
+                        "market_value": p.get("market_value", 0),
+                    }
+            return {"symbol": symbol, "quantity": 0, "available": 0}
+        return {"positions": positions}
+
+    async def get_account_info(self) -> Dict:
+        """查询账户资金"""
+        try:
+            acct = await self.client.get_account()
+            return {
+                "total_balance": acct.get("total_balance", 0),
+                "available_balance": acct.get("available_balance", 0),
+                "frozen_balance": acct.get("frozen_balance", 0),
+                "market_value": acct.get("market_value", 0),
+            }
+        except Exception as e:
+            logger.warning("获取东方财富账户信息失败: %s", e)
+            return {"total_balance": 0, "available_balance": 0}

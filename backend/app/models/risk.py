@@ -56,6 +56,7 @@ class RiskRecord(Base):
     __tablename__ = "risk_records"
     __table_args__ = (
         Index("idx_risk_records_user_created", "user_id", "created_at"),
+        Index("idx_risk_records_symbol", "symbol"),
     )
 
     id = Column(Integer, primary_key=True, index=True)

@@ -29,11 +29,14 @@ def run_async_backtest(strategy_id: int, symbol: str, interval: str, start_date:
         kwargs.setdefault("commission_rate", 0.001)
         kwargs.setdefault("slippage", 0.001)
 
+        import json as _json
+        params = _json.loads(strategy.params) if strategy.params else {}
         result = run_backtest(
-            strategy=strategy,
+            strategy_type=strategy.type,
+            params=params,
             kline_data=klines,
             initial_capital=kwargs["initial_capital"],
-            commission_rate=kwargs["commission_rate"],
+            commission=kwargs["commission_rate"],
             slippage=kwargs["slippage"],
         )
 

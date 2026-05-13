@@ -4,11 +4,16 @@
 12支回测精选股票买入信号监控脚本
 策略类型: trend(主升浪), kdj_pullback(KDJ回调), bottom_fish(抄底),
           ma_cross(MA趋势), kdj(KDJ金叉), grid(网格), bollinger(布林)
+
+v2: 集成回测门禁 + J值过热过滤
+    - 买入信号须通过历史回测验证（年化>5% 且 盈亏比>1.2）
+    - KDJ J>90 / K>80 时降级买入信号为警告
 """
 
 import os
 import sys
 import json
+import sqlite3
 import urllib.request
 from datetime import datetime, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -35,6 +40,7 @@ STOCK_CONFIGS = [
     ("立讯精密 002475", "立讯精密", "002475.SZ", "trend",        "custom_lixun"),
     ("金风科技 002202", "金风科技", "002202.SZ", "kdj_pullback", "custom_jinfeng"),
     ("巴比食品 605338", "巴比食品", "605338.SH", "bottom_fish",  "custom_babi"),
+    ("特变电工 600089", "特变电工", "600089.SH", "trend",        "custom_tebian"),
     # ——— MA趋势策略（回测最佳：MA_CROSS）———
     ("东山精密 002384", "东山精密", "002384.SZ", "ma_cross",   "generic_ma_trend"),
     ("中际旭创 300308", "中际旭创", "300308.SZ", "ma_cross",   "generic_ma_trend"),
@@ -48,6 +54,115 @@ STOCK_CONFIGS = [
     ("亨通光电 600487", "亨通光电", "600487.SH", "grid",       "generic_grid"),
     ("深南电路 002916", "深南电路", "002916.SZ", "bollinger",  "generic_boll_grid"),
 ]
+
+# ── 回测门禁缓存（避免每次运行都查DB/跑回测）──
+_BACKTEST_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backtest_gate_cache.json')
+_BACKTEST_CACHE: dict = {}
+_CACHE_TTL = 86400  # 24小时有效
+
+# 策略类型 → 回测策略名映射
+_STRATEGY_TO_BACKTEST_TYPE = {
+    "ma_cross": "ma_cross",
+    "kdj": "kdj",
+    "trend": "ma_cross",
+    "kdj_pullback": "ma_cross",
+    "bottom_fish": "kdj",
+    "grid": "grid",
+    "bollinger": "bollinger",
+}
+
+
+def _load_backtest_cache():
+    global _BACKTEST_CACHE
+    if os.path.exists(_BACKTEST_CACHE_FILE):
+        try:
+            with open(_BACKTEST_CACHE_FILE) as f:
+                _BACKTEST_CACHE = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            _BACKTEST_CACHE = {}
+
+
+def _save_backtest_cache():
+    with open(_BACKTEST_CACHE_FILE, 'w') as f:
+        json.dump(_BACKTEST_CACHE, f, ensure_ascii=False, indent=2)
+
+
+def validate_strategy_backtest(code: str, strategy: str) -> dict:
+    """
+    回测门禁：验证指定股票+策略历史上是否赚钱。
+    优先从DB backtest_results表查询，无结果时从缓存读取。
+
+    Returns: {"passed": bool, "annual_return": float, "profit_factor": float, "reason": str}
+    """
+    bt_type = _STRATEGY_TO_BACKTEST_TYPE.get(strategy, strategy)
+    cache_key = f"{code}_{bt_type}"
+
+    # Check cache
+    if cache_key in _BACKTEST_CACHE:
+        entry = _BACKTEST_CACHE[cache_key]
+        age = datetime.now().timestamp() - entry.get('ts', 0)
+        if age < _CACHE_TTL:
+            return entry['result']
+
+    result = {"passed": False, "annual_return": 0, "profit_factor": 0, "reason": ""}
+
+    # Try SQLite DB
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backend', 'quant_trade.db')
+    if os.path.exists(db_path):
+        try:
+            conn = sqlite3.connect(db_path)
+            # Strip .SH/.SZ suffix for DB query (DB may have either format)
+            sym = code.replace('.SH', '').replace('.SZ', '')
+            rows = conn.execute(
+                "SELECT annual_return, profit_factor, total_trades, win_rate "
+                "FROM backtest_results "
+                "WHERE (symbol = ? OR symbol = ? OR symbol = ?) AND strategy_type = ? "
+                "ORDER BY annual_return DESC LIMIT 1",
+                (code, code + '.SH', code + '.SZ', bt_type)
+            ).fetchall()
+            conn.close()
+
+            if rows:
+                ar, pf, tr, wr = rows[0]
+                ar_pct = (ar or 0) * 100
+                pf_val = pf or 0
+                tr_val = tr or 0
+
+                if ar_pct > 5 and pf_val > 1.2 and tr_val >= 3:
+                    result = {"passed": True, "annual_return": ar_pct, "profit_factor": pf_val,
+                             "total_trades": tr_val, "win_rate": (wr or 0) * 100,
+                             "reason": f"回测通过: 年化{ar_pct:.0f}% PF{pf_val:.2f}"}
+                elif rows:
+                    result = {"passed": False, "annual_return": ar_pct, "profit_factor": pf_val,
+                             "total_trades": tr_val, "win_rate": (wr or 0) * 100,
+                             "reason": f"回测不达标: 年化{ar_pct:.0f}%(需>5%) PF{pf_val:.2f}(需>1.2)"}
+        except Exception as e:
+            result["reason"] = f"DB查询异常: {e}"
+
+    if not result["reason"]:
+        result["reason"] = "无回测记录，需先运行回测"
+
+    # Cache
+    _BACKTEST_CACHE[cache_key] = {"ts": datetime.now().timestamp(), "result": result}
+    return result
+
+
+def apply_backtest_gate(signals: list, code: str, strategy: str) -> list:
+    """
+    对买入信号应用回测门禁：不通过回测的信号降级或剔除。
+    """
+    gate = validate_strategy_backtest(code, strategy)
+    filtered = []
+    for s in signals:
+        if s.startswith('🟢'):
+            if gate['passed']:
+                filtered.append(s + f" [{gate['reason']}]")
+            else:
+                # 降级：回测不过的买入信号变成⚠️观察信号
+                filtered.append(s.replace('🟢', '⚠️ [回测未过]', 1) + f" | {gate['reason']}")
+        else:
+            filtered.append(s)
+    return filtered
 
 # mx-data API
 MX_APIKEY = os.environ.get("MX_APIKEY", "")
@@ -290,7 +405,10 @@ def check_babi(indicators):
 
     # Full breakout: price > 20MA
     if close > ma20 and diff > dea:
-        signals.append(f"🟢 [巴比食品] 突破20日线({ma20:.2f})+MACD金叉 | 现价{close:.2f} 趋势逆转，重仓")
+        if j > 90 or k > 80:
+            signals.append(f"⚠️ [巴比食品] 突破20日线但KDJ过热(J={j:.0f},K={k:.0f}) | 现价{close:.2f} 等回调加仓")
+        else:
+            signals.append(f"🟢 [巴比食品] 突破20日线({ma20:.2f})+MACD金叉 | 现价{close:.2f} 趋势逆转，重仓")
 
     # Stop loss warning
     if close < boll_low * 0.97:
@@ -299,6 +417,84 @@ def check_babi(indicators):
     # RSI recovery
     if rsi > 0 and rsi < 20:
         signals.append(f"📊 [巴比食品] RSI极度超卖({rsi:.1f}) | 现价{close:.2f} 反弹概率高,关注抄底")
+
+    return signals
+
+
+def check_tebian(indicators):
+    """Check 特变电工(600089.SH) buy conditions — MA_CROSS策略，回测年化30% PF3.47"""
+    tech = indicators.get('600089.SH', {}).get('technical', {})
+    price_data = indicators.get('600089.SH', {}).get('price', {})
+
+    signals = []
+
+    close = safe_float(price_data.get('收盘价', {}).get('latest', 0))
+    volume = safe_float(price_data.get('成交量', {}).get('latest', 0))
+    ma5 = safe_float(tech.get('5日MA简单移动平均', {}).get('latest', 0))
+    ma20 = safe_float(tech.get('20日MA简单移动平均', {}).get('latest', 0))
+    ma60 = safe_float(tech.get('60日MA简单移动平均', {}).get('latest', 0))
+    diff = safe_float(tech.get('MACD指数平滑异同平均-DIFF', {}).get('latest', 0))
+    dea = safe_float(tech.get('MACD指数平滑异同平均-DEA', {}).get('latest', 0))
+    k = safe_float(tech.get('KDJ(K值)', {}).get('latest', 0))
+    d = safe_float(tech.get('KDJ(D值)', {}).get('latest', 0))
+    j = safe_float(tech.get('KDJ(J值)', {}).get('latest', 0))
+    rsi = safe_float(tech.get('RSI相对强弱指标', {}).get('latest', 0))
+
+    if close == 0:
+        return signals
+
+    prefix = "[特变电工]"
+    macd_bullish = diff > dea
+    macd_golden_today = diff > dea and diff > 0  # DIFF翻红
+    kdj_healthy = k < 80 and j < 100
+    vol_ok = volume > 15000000  # ~15万手以上
+
+    # ── 买入信号 ──
+
+    # 第1批: MACD金叉确认 + KDJ未过热 → 现价建仓1/3
+    if macd_golden_today and kdj_healthy and close > ma5:
+        signals.append(f"🟢 {prefix} 第1批建仓 - MACD金叉(DIFF={diff:.2f}>0)+KDJ健康(K={k:.0f})+站上5日线 | 现价{close:.2f}")
+    elif macd_bullish and kdj_healthy and close > ma5:
+        signals.append(f"🟡 {prefix} MACD多头但DIFF未翻红(DIFF={diff:.2f}) | 现价{close:.2f} 观察等确认")
+
+    # 第2批: 回踩MA20附近 + MACD未死叉 → 加仓
+    if close <= ma20 * 1.03 and macd_bullish and kdj_healthy:
+        signals.append(f"🟢 {prefix} 第2批加仓 - 回踩MA20({ma20:.2f})附近+MACD未死叉 | 现价{close:.2f}")
+    elif close <= ma20 * 1.05 and macd_bullish:
+        if k < 80:
+            signals.append(f"🟡 {prefix} 接近MA20({ma20:.2f}) | 现价{close:.2f} 关注第2批加仓机会")
+
+    # 第3批: 突破前高29.29 + 放量 → 趋势确认加仓
+    if close > 29.29 and vol_ok and macd_bullish and kdj_healthy:
+        signals.append(f"🟢 {prefix} 第3批加仓 - 突破前高29.29+放量+MACD多头 | 现价{close:.2f} 趋势确认")
+
+    # ── 警告信号 ──
+
+    # KDJ过热预警
+    if j > 100 or k > 80:
+        signals.append(f"⚠️ {prefix} KDJ过热(J={j:.0f},K={k:.0f}) | 现价{close:.2f} 暂停加仓等修复")
+    elif j > 90:
+        signals.append(f"📊 {prefix} KDJ接近过热(J={j:.0f}) | 现价{close:.2f} 谨慎追高")
+
+    # RSI超买
+    if rsi > 70:
+        signals.append(f"📊 {prefix} RSI超买({rsi:.1f}) | 现价{close:.2f} 短线不追高")
+
+    # 接近目标位
+    if close > 31.00:
+        signals.append(f"📊 {prefix} 接近第一止盈位32.00 | 现价{close:.2f} 准备分批止盈")
+    elif close > 32.00:
+        signals.append(f"🏁 {prefix} 到达第一止盈目标32.00 | 现价{close:.2f} 减仓1/3")
+
+    # ── 止损信号 ──
+
+    if close < ma20 and not macd_bullish:
+        signals.append(f"🔴 {prefix} 跌破MA20({ma20:.2f})+MACD死叉 | 现价{close:.2f} 减半仓")
+    elif close < ma20:
+        signals.append(f"⚠️ {prefix} 跌破MA20({ma20:.2f}) | 现价{close:.2f} 关注MACD是否跟随死叉")
+
+    if close < ma60:
+        signals.append(f"🔴 {prefix} 跌破MA60({ma60:.2f}) | 现价{close:.2f} 清仓离场")
 
     return signals
 
@@ -339,7 +535,10 @@ def check_ma_trend(code, name, indicators):
 
     # Secondary: pullback to 20MA
     if close <= ma20 * 1.02 and macd_bullish:
-        signals.append(f"🟢 {prefix} 回调至20日均线({ma20:.2f})附近+MACD未死叉 | 现价{close:.2f} 加仓")
+        if j > 90 or k > 80:
+            signals.append(f"⚠️ {prefix} 回调至20日均线但KDJ过热(J={j:.0f},K={k:.0f}) | 现价{close:.2f} 等KDJ修复后加仓")
+        else:
+            signals.append(f"🟢 {prefix} 回调至20日均线({ma20:.2f})附近+MACD未死叉 | 现价{close:.2f} 加仓")
 
     # KDJ oversold bounce
     if j < 25 and k < 30:
@@ -397,7 +596,10 @@ def check_kdj_generic(code, name, indicators):
 
     # Reversal: KDJ death cross to golden cross recovery
     if kdj_golden and close > ma20 and diff > dea:
-        signals.append(f"🟢 {prefix} KDJ金叉+站上20日线+MACD多头 | 现价{close:.2f} 趋势确认加仓")
+        if kdj_overbought:
+            signals.append(f"⚠️ {prefix} KDJ金叉但超买(J={j:.0f},K={k:.0f}) | 现价{close:.2f} 等回调不追高")
+        else:
+            signals.append(f"🟢 {prefix} KDJ金叉+站上20日线+MACD多头 | 现价{close:.2f} 趋势确认加仓")
 
     # Warnings
     if kdj_overbought:
@@ -583,6 +785,9 @@ def main():
     print(f"买入信号监控 - {now.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*60}")
 
+    # Load backtest gate cache (avoids DB hits on every run)
+    _load_backtest_cache()
+
     # Fetch data for all stocks in parallel (3x faster than sequential batches)
     all_indicators = {}
     query_names = [s[0] for s in STOCK_CONFIGS]
@@ -604,23 +809,36 @@ def main():
         print("[ERROR] Failed to fetch data")
         sys.exit(1)
 
-    # Dispatch to appropriate check function
-    CHECKER_MAP = {
-        "custom_lixun":     lambda: check_lixun(all_indicators),
-        "custom_jinfeng":   lambda: check_jinfeng(all_indicators),
-        "custom_babi":      lambda: check_babi(all_indicators),
-        "generic_ma_trend": lambda: check_ma_trend(cfg[2], cfg[1], all_indicators),
-        "generic_kdj":      lambda: check_kdj_generic(cfg[2], cfg[1], all_indicators),
-        "generic_grid":     lambda: check_grid_generic(cfg[2], cfg[1], all_indicators),
-        "generic_boll_grid":lambda: check_boll_grid(cfg[2], cfg[1], all_indicators),
-    }
+    # Dispatch to checker, then apply backtest gate per stock
+    def _make_checker(cfg):
+        code, strategy, ctype = cfg[2], cfg[3], cfg[4]
+        if ctype == "custom_lixun":
+            return check_lixun(all_indicators)
+        elif ctype == "custom_jinfeng":
+            return check_jinfeng(all_indicators)
+        elif ctype == "custom_babi":
+            return check_babi(all_indicators)
+        elif ctype == "custom_tebian":
+            return check_tebian(all_indicators)
+        elif ctype == "generic_ma_trend":
+            return check_ma_trend(code, cfg[1], all_indicators)
+        elif ctype == "generic_kdj":
+            return check_kdj_generic(code, cfg[1], all_indicators)
+        elif ctype == "generic_grid":
+            return check_grid_generic(code, cfg[1], all_indicators)
+        elif ctype == "generic_boll_grid":
+            return check_boll_grid(code, cfg[1], all_indicators)
+        return []
 
     all_signals = []
     for cfg in STOCK_CONFIGS:
-        checker_type = cfg[4]
-        checker = CHECKER_MAP.get(checker_type)
-        if checker:
-            all_signals.extend(checker())
+        raw = _make_checker(cfg)
+        # Apply backtest gate: downgrade 🟢 signals if strategy not historically profitable
+        filtered = apply_backtest_gate(raw, cfg[2], cfg[3])
+        all_signals.extend(filtered)
+
+    # Persist backtest cache for next run
+    _save_backtest_cache()
 
     # Collect buy signals
     buy_signals = [s for s in all_signals if s.startswith('🟢')]

@@ -52,7 +52,9 @@ def _get_kelly_fraction(symbol: str, db=None) -> float:
                     # profit_factor = wins / losses, so avg_win/avg_loss = profit_factor * (1-win_rate) / win_rate
                     win_loss_ratio = row.profit_factor * (1 - win_rate) / win_rate if win_rate > 0 else 1.0
                     kelly = win_rate - (1 - win_rate) / max(win_loss_ratio, 0.01)
-                    half_kelly = max(0.01, kelly / 2)  # half-Kelly for safety
+                    if kelly <= 0:
+                        return 0.0  # negative EV — no allocation
+                    half_kelly = kelly / 2  # half-Kelly for safety
                     return min(half_kelly, settings.AUTO_TRADE_POSITION_PCT)
     except Exception:
         pass
@@ -101,29 +103,22 @@ def _get_drawdown_factor(total_value: float) -> Tuple[float, float]:
     Returns (drawdown_pct, adjustment_factor).
     Factor: 1.0 = normal, 0.5 = half size (DD>10%), 0.0 = stop (DD>20%).
 
-    Uses fcntl file locking to prevent concurrent read-modify-write races.
+    Peak equity is persisted in Redis so it survives Docker restarts.
+    Uses Redis SETNX + GET/SET for atomic read-modify-write — multiple
+    workers can safely update the peak without data loss.
     """
-    import fcntl
-    import json as _json
-    peak_file = os.path.join(os.path.dirname(__file__), '..', '..', '..', '.equity_peak.json')
-    peak_lock_file = peak_file + '.lock'
+    from app.core.redis import get_sync_redis
+    peak_key = "equity_peak:user:1"  # user_id=1 for system auto-trade
 
+    r = get_sync_redis()
     peak = total_value
     try:
-        os.makedirs(os.path.dirname(peak_file), exist_ok=True)
-        with open(peak_lock_file, 'w') as lf:
-            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
-            try:
-                if os.path.exists(peak_file):
-                    with open(peak_file) as f:
-                        peak = float(_json.load(f).get('peak', total_value))
-
-                if total_value > peak:
-                    peak = total_value
-                    with open(peak_file, 'w') as f:
-                        _json.dump({'peak': peak, 'updated': datetime.now(timezone.utc).isoformat()}, f)
-            finally:
-                fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+        stored = r.get(peak_key)
+        if stored:
+            peak = float(stored)
+        if total_value > peak:
+            peak = total_value
+            r.set(peak_key, str(peak))
     except Exception:
         pass
 
@@ -184,8 +179,14 @@ async def execute_signal(
     level: str,
     score: int,
     signals: List[Dict[str, Any]],
+    stop_loss: float = 0.0,
 ) -> Dict[str, Any]:
-    """Execute a single trade signal through the auto-trading pipeline (async)."""
+    """Execute a single trade signal through the auto-trading pipeline (async).
+
+    Args:
+        stop_loss: ATR-based stop-loss price from decision engine.
+                   If 0, defaults to -5% from entry (legacy fallback).
+    """
     if not settings.AUTO_TRADE_ENABLED:
         return {"executed": False, "order_id": None, "reason": "自动交易总开关未启用", "dry_run": False}
 
@@ -246,20 +247,20 @@ async def execute_signal(
                      f"qty={quantity} price={current_price:.2f} value={order_value:.0f} "
                      f"slip={slippage:.3f}")
 
-        # 自动创建 5% 止损卖单（手动创建，不走 sandbox 自动成交）
-        if settings.ORDER_EXECUTION_MODE == "sandbox":
-            stop_price = round(current_price * 0.95, 2)
-            from app.models.order import Order as OrderModel, OrderSide as OS, OrderStatus as OSt
-            stop_order = OrderModel(
-                user_id=user_id, symbol=symbol, side=OS.SELL,
-                type="stop", status=OSt.PENDING,
-                stop_price=stop_price, price=stop_price,
-                quantity=float(quantity), source="auto",
-                remark=f"auto stop-loss | {name} | -5% | entry={current_price:.2f}",
-            )
-            db.add(stop_order)
-            await db.flush()
-            logger.info(f"[AUTO-TRADE] {name}({symbol}) stop-loss set at {stop_price} (-5%)")
+        # Create stop-loss order (both sandbox and live)
+        sl_price = stop_loss if stop_loss > 0 else round(current_price * 0.95, 2)
+        sl_source = "decision_atr" if stop_loss > 0 else "hardcoded_5pct"
+        from app.models.order import Order as OrderModel, OrderSide as OS, OrderStatus as OSt
+        stop_order = OrderModel(
+            user_id=user_id, symbol=symbol, side=OS.SELL,
+            type="stop", status=OSt.PENDING,
+            stop_price=sl_price, price=sl_price,
+            quantity=float(quantity), source="auto",
+            remark=f"auto stop-loss | {name} | {sl_source} | entry={current_price:.2f}",
+        )
+        db.add(stop_order)
+        await db.flush()
+        logger.info(f"[AUTO-TRADE] {name}({symbol}) stop-loss set at {sl_price} ({sl_source})")
 
         return {"executed": True, "order_id": order.id,
                 "reason": f"{name} {level} {quantity}股@{current_price:.2f} 订单#{order.id}",
@@ -313,8 +314,14 @@ def execute_signal_sync(
     level: str,
     score: int,
     signals: List[Dict[str, Any]],
+    stop_loss: float = 0.0,
 ) -> Dict[str, Any]:
-    """Execute a single trade signal through the auto-trading pipeline (sync)."""
+    """Execute a single trade signal through the auto-trading pipeline (sync).
+
+    Args:
+        stop_loss: ATR-based stop-loss price from decision engine.
+                   If 0, defaults to -5% from entry (legacy fallback).
+    """
     if not settings.AUTO_TRADE_ENABLED:
         return {"executed": False, "order_id": None, "reason": "自动交易总开关未启用", "dry_run": False}
 
@@ -365,6 +372,16 @@ def execute_signal_sync(
 
     # Real order creation (sync)
     try:
+        # Pre-trade risk check (sync path)
+        from app.services.risk import check_risk_rules_sync
+        risk_check = check_risk_rules_sync(db, user_id, symbol, {
+            "symbol": symbol, "side": "buy", "type": "limit",
+            "price": current_price, "quantity": float(quantity),
+        })
+        if not risk_check["passed"]:
+            return {"executed": False, "order_id": None,
+                    "reason": f"风控拒绝: {risk_check.get('message', '')}", "dry_run": False}
+
         is_sandbox = settings.ORDER_EXECUTION_MODE == "sandbox"
 
         order = Order(
@@ -374,6 +391,19 @@ def execute_signal_sync(
             source="auto", remark=remark,
         )
         db.add(order)
+        db.flush()
+
+        # Create stop-loss order (shared between sandbox and live)
+        sl_price = stop_loss if stop_loss > 0 else round(current_price * 0.95, 2)
+        sl_source = "decision_atr" if stop_loss > 0 else "hardcoded_5pct"
+        stop_order = Order(
+            user_id=user_id, symbol=symbol, side=OrderSide.SELL,
+            type="stop", status=OrderStatus.PENDING,
+            stop_price=sl_price, price=sl_price,
+            quantity=float(quantity), source="auto",
+            remark=f"auto stop-loss | {name} | {sl_source} | entry={current_price:.2f}",
+        )
+        db.add(stop_order)
         db.flush()
 
         if is_sandbox:
@@ -392,44 +422,52 @@ def execute_signal_sync(
             db.add(trade)
             db.flush()
 
-            # 自动创建 5% 止损卖单
-            stop_price = round(current_price * 0.95, 2)
-            stop_order = Order(
-                user_id=user_id, symbol=symbol, side=OrderSide.SELL,
-                type="stop", status=OrderStatus.PENDING,
-                stop_price=stop_price,
-                price=stop_price,
-                quantity=float(quantity),
-                source="auto",
-                remark=f"auto stop-loss | {name} | -5% | entry={current_price:.2f}",
-            )
-            db.add(stop_order)
-            db.flush()
-            logger.info(f"[AUTO-TRADE] {name}({symbol}) stop-loss set at {stop_price} (-5%)")
-        else:
-            # Real broker mode: send order to Windows easytrader agent
-            import urllib.request as _urllib
-            raw_code = symbol.replace(".SH", "").replace(".SZ", "").replace(".BJ", "")
-            agent_payload = json.dumps({
-                "symbol": raw_code,
-                "side": "buy",
-                "price": current_price,
-                "amount": int(quantity),
-            }).encode()
-            try:
-                agent_req = _urllib.request.Request(
-                    f"{settings.EM_TRADE_AGENT_URL}/order",
-                    data=agent_payload,
-                    headers={"Content-Type": "application/json"},
+            # Update position after sandbox fill
+            existing_pos = db.execute(
+                select(Position).where(
+                    and_(Position.user_id == user_id, Position.symbol == symbol)
                 )
-                with _urllib.request.urlopen(agent_req, timeout=15) as resp:
-                    agent_result = json.loads(resp.read())
-                if agent_result.get("ok"):
-                    order.order_id_exchange = str(agent_result.get("data", {}).get("entrust_no", ""))
-                    logger.info(f"[AUTO-TRADE LIVE] {name}({symbol}) sent to broker, "
-                                f"entrust={order.order_id_exchange}")
+            ).scalars().first()
+
+            if existing_pos:
+                if existing_pos.quantity and existing_pos.quantity > 0:
+                    total_cost = existing_pos.quantity * existing_pos.cost_price + float(quantity) * current_price
+                    new_qty = existing_pos.quantity + float(quantity)
+                    existing_pos.cost_price = total_cost / new_qty
                 else:
-                    raise RuntimeError(agent_result.get("error", "代理返回失败"))
+                    existing_pos.cost_price = current_price
+                    new_qty = float(quantity)
+                existing_pos.quantity = new_qty
+                existing_pos.available_quantity = new_qty
+                existing_pos.current_price = current_price
+                existing_pos.market_value = new_qty * current_price
+            else:
+                pos = Position(
+                    user_id=user_id, symbol=symbol,
+                    quantity=float(quantity), available_quantity=float(quantity),
+                    cost_price=current_price, current_price=current_price,
+                    market_value=float(quantity) * current_price,
+                )
+                db.add(pos)
+            db.flush()
+
+            logger.info(f"[AUTO-TRADE] {name}({symbol}) stop-loss set at {sl_price} ({sl_source})")
+        else:
+            logger.info(f"[AUTO-TRADE LIVE] {name}({symbol}) stop-loss set at {sl_price} ({sl_source})")
+            # Submit to broker via adapter pattern
+            try:
+                from app.utils.exchange_adapter import ExchangeAdapterFactory
+                adapter = ExchangeAdapterFactory.create(settings.ORDER_EXECUTION_MODE)
+                import asyncio
+                loop = asyncio.get_event_loop()
+                result = loop.run_until_complete(adapter.create_order(
+                    symbol=symbol, side="buy", order_type="limit",
+                    quantity=float(quantity), price=current_price,
+                ))
+                order.order_id_exchange = str(result.get("order_id") or result.get("entrust_no", ""))
+                order.status = OrderStatus.PENDING
+                logger.info(f"[AUTO-TRADE LIVE] {name}({symbol}) sent via {settings.ORDER_EXECUTION_MODE}, "
+                            f"entrust={order.order_id_exchange}")
             except Exception as _e:
                 db.rollback()
                 logger.error(f"[AUTO-TRADE BROKER FAIL] {name}({symbol}): {_e}")

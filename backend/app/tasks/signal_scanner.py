@@ -11,12 +11,12 @@
 Bark 推送配置来自 settings，与 stock-push.sh 共用同一 KEY。
 """
 import json
+import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Set
 from collections import defaultdict
 
 import numpy as np
-import requests
 from loguru import logger
 from sqlalchemy import select
 
@@ -26,9 +26,31 @@ from app.core.database import SyncSessionLocal
 from app.core.redis import acquire_sync_lock, release_sync_lock
 from app.models.market_data import KLine, SymbolInfo
 from app.models.notification import Notification
+from app.utils.notify import push_bark, send_email
 
-BARK_URL = "https://api.day.app/push"
-# BARK_KEY 从 settings 读取，见 app/core/config.py
+# 信号去重状态文件
+_SIGNAL_STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "signal_state.json")
+
+
+def _make_signal_key(symbol: str, signal_type: str) -> str:
+    return f"{symbol}|{signal_type}"
+
+
+def _load_signal_state() -> Dict[str, Any]:
+    try:
+        with open(_SIGNAL_STATE_FILE, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {"signal_keys": [], "updated": ""}
+
+
+def _save_signal_state(signal_keys: List[str]) -> None:
+    state = {
+        "updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "signal_keys": signal_keys,
+    }
+    with open(_SIGNAL_STATE_FILE, "w") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
 
 
 def _ema(arr: np.ndarray, period: int) -> np.ndarray:
@@ -210,13 +232,13 @@ def scan_signals(symbol: str, name: str, klines: list) -> List[Dict[str, Any]]:
     kdj = _compute_kdj(highs, lows, closes)
     macd_div = _detect_macd_divergence(closes)
 
-    # MA golden cross
+    # MA golden cross — detect cross that just happened (1-bar lookback)
     ma5 = np.mean(closes[-5:])
     ma20 = np.mean(closes[-20:])
     golden_cross = False
     if n >= 21:
-        ma5_prev = np.mean(closes[-7:-2])
-        ma20_prev = np.mean(closes[-22:-2])
+        ma5_prev = np.mean(closes[-6:-1])
+        ma20_prev = np.mean(closes[-21:-1])
         golden_cross = ma5_prev <= ma20_prev and ma5 > ma20
 
     # CMF
@@ -302,29 +324,6 @@ def _assess_signals(signals: List[Dict[str, Any]], price: float, name: str) -> T
     return (level, score, f"{label} {'+'.join(types)} 置信度:{score}")
 
 
-def push_bark(title: str, body: str, group: str = "signal") -> bool:
-    """Push notification via Bark."""
-    payload = {
-        "device_key": settings.BARK_KEY,
-        "title": title,
-        "body": body,
-        "badge": 1,
-        "sound": "default",
-        "group": group,
-    }
-    try:
-        resp = requests.post(BARK_URL, json=payload, timeout=10)
-        if resp.status_code == 200:
-            logger.info(f"Bark推送成功: {title}")
-            return True
-        else:
-            logger.warning(f"Bark推送失败: {resp.status_code} {resp.text}")
-            return False
-    except Exception as e:
-        logger.error(f"Bark推送异常: {e}")
-        return False
-
-
 def _is_market_hours() -> bool:
     """Check if current time is within A-share trading hours (Mon-Fri 9:00-15:00 Beijing)."""
     from datetime import time as _time
@@ -398,6 +397,19 @@ def run_signal_scanner():
                 elif mtf_mult <= 0.7 and level == "STRONG_BUY":
                     level = "BUY"  # downgrade: daily signal not confirmed
 
+                # Backtest gate: require backtest + signal matches best strategy
+                if level in ("STRONG_BUY", "BUY"):
+                    from app.services.backtest import filter_signals_by_backtest
+                    filtered, gate = filter_signals_by_backtest(signals, sym.symbol)
+                    if not gate["passed"]:
+                        logger.info(f"[BACKTEST-GATE] {gate['reason']}")
+                        if gate.get("best_strategy"):
+                            level = "WATCH"
+                            adjusted_score = min(adjusted_score, 40)
+                            summary = f"{summary} [回测门禁: {gate['reason']}]"
+                        else:
+                            continue  # no backtest at all, skip entirely
+
                 all_signals.append({
                     "symbol": sym.symbol,
                     "name": sym.name,
@@ -446,12 +458,32 @@ def run_signal_scanner():
         body = "\n".join(lines)
         now_str = datetime.now().strftime("%H:%M")
 
-        # Bark push
+        # 信号去重: 计算当前信号签名集合
+        current_keys: Set[str] = set()
+        for s in all_signals:
+            for sig in s["signals"]:
+                current_keys.add(_make_signal_key(s["symbol"], sig["type"]))
+
+        prev_state = _load_signal_state()
+        prev_keys: Set[str] = set(prev_state.get("signal_keys", []))
+
+        # 只有当信号集合发生变化时才推送
+        if current_keys == prev_keys:
+            logger.info(f"信号扫描完成: 信号未变化 ({len(all_signals)} 个信号)，跳过推送")
+            _save_signal_state(list(current_keys))
+            return
+
+        # Bark + 邮件推送
         if strong_buys or buys:
             title = f"🔥 买入信号 {now_str}" if strong_buys else f"📈 交易信号 {now_str}"
             push_bark(title, body)
+            send_email(title, body)
         elif watches:
             push_bark(f"👀 关注信号 {now_str}", body)
+            send_email(f"👀 关注信号 {now_str}", body)
+
+        # 保存当前信号状态用于下次去重
+        _save_signal_state(list(current_keys))
 
         # 记录到数据库 Notification（user_id=1 作为系统默认）
         for s in all_signals:
@@ -471,6 +503,17 @@ def run_signal_scanner():
                 db.add(notif)
 
         db.commit()
+
+        # ── Cache scan results to Redis for WebSocket dedup (TTL=30s) ──
+        try:
+            from app.core.redis import get_sync_redis
+            r = get_sync_redis()
+            r.set("signal_scan:latest", json.dumps({
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "count": len(all_signals),
+            }, default=str), ex=30)
+        except Exception:
+            pass
 
         # ── 自动交易引擎 ──
         if settings.AUTO_TRADE_ENABLED:

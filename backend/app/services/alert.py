@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.models.price_alert import PriceAlert
 from app.models.market_data import Ticker
 from app.models.notification import Notification
+from app.utils.notify import push_both
 
 
 async def create_alert(
@@ -156,6 +157,9 @@ def check_price_alerts(db: Session) -> int:
         )
         db.add(notification)
         triggered_count += 1
+
+        # Bark + 邮件推送通知
+        push_both(title, content, "price_alert")
 
     if triggered_count:
         db.flush()

@@ -49,6 +49,12 @@ celery_app.conf.update(
             "schedule": crontab(minute="*/5", hour="9-15", day_of_week="1-5"),
             "options": {"queue": "market"},
         },
+        # 东方财富委托同步（工作日 9:00-15:55 每30秒，仅在实盘模式下生效）
+        "eastmoney-order-sync": {
+            "task": "app.tasks.market.sync_eastmoney_orders",
+            "schedule": 30.0,
+            "options": {"queue": "market"},
+        },
         # 持仓监控推送（工作日 9:00-15:55 每5分钟，脚本内部判断半小时节点推送）
         "stock-push": {
             "task": "app.tasks.stock_push.run_stock_push",

@@ -32,6 +32,8 @@ def run_scheduled_strategies():
             strategies = list(db.execute(stmt).scalars().all())
             logger.info(f"找到 {len(strategies)} 个活跃策略")
 
+            trade_signals = []
+
             for strategy in strategies:
                 schedule_config = strategy.schedule_config or {}
                 if not schedule_config.get("enabled", False):
@@ -101,9 +103,37 @@ def run_scheduled_strategies():
                     db.commit()
                     logger.info(f"策略 {strategy.id}({strategy.name}) 执行完成，{len(signals)} 个信号")
 
+                    buy_signals = [s for s in signals if s.get("action") == "buy"]
+                    if buy_signals:
+                        latest = buy_signals[-1]
+                        trade_signals.append({
+                            "symbol": symbols[0],
+                            "name": symbols[0],
+                            "price": latest.get("price", 0),
+                            "level": "BUY",
+                            "score": 65,
+                            "signals": [{"type": latest.get("reason", "策略信号"), "confidence": 65}],
+                        })
+
                 except Exception as e:
                     logger.error(f"策略 {strategy.id} 执行失败: {e}")
                     db.rollback()
+
+            if trade_signals:
+                from app.core.config import settings
+                if settings.AUTO_TRADE_ENABLED and settings.ORDER_EXECUTION_MODE == "sandbox":
+                    try:
+                        from app.services.auto_trade import execute_signal_batch_sync
+                        auto_results = execute_signal_batch_sync(db, user_id=1, stock_signals=trade_signals)
+                        for r in auto_results:
+                            at = r.get("auto_trade", {})
+                            if at.get("executed"):
+                                logger.info(f"[STRATEGY-AUTO-TRADE] {r['symbol']}: EXECUTED")
+                            else:
+                                logger.info(f"[STRATEGY-AUTO-TRADE] {r['symbol']}: SKIP ({at.get('reason', 'unknown')})")
+                    except Exception as exc:
+                        logger.error(f"[STRATEGY-AUTO-TRADE] Error: {exc}")
+
         except Exception as e:
             logger.error(f"策略调度失败: {e}")
         finally:

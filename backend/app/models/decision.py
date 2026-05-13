@@ -35,6 +35,8 @@ class InvestmentDecision(Base):
     __tablename__ = "investment_decisions"
     __table_args__ = (
         Index("idx_investment_decisions_symbol", "symbol"),
+        Index("idx_investment_decisions_user_id", "user_id"),
+        Index("idx_investment_decisions_user_status", "user_id", "status"),
     )
 
     id = Column(Integer, primary_key=True, index=True)

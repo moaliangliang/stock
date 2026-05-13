@@ -83,52 +83,23 @@ def fetch_real_klines(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
 ) -> Optional[List[Dict[str, Any]]]:
-    """获取真实 K 线数据。优先东方财富，新浪财经，akshare 作为 fallback。"""
-    # 仅支持 A 股代码格式
+    """获取真实 K 线数据。新浪财经为主数据源（数据来自交易所，准确可靠）。
+
+    东方财富 push API 被服务器 IP 阻断，已移除。Skills API 仅用于基本面和评分。
+    """
     if not symbol.endswith((".SH", ".SZ")):
         return None
 
     result: Optional[List[Dict[str, Any]]] = None
 
-    # 按配置的 provider 优先尝试
-    if settings.MARKET_DATA_PROVIDER == "sina":
-        result = fetch_klines_from_sina(symbol, interval, start_date, end_date)
-        if result:
-            for k in result:
-                k["data_source"] = DataSource.SINA.value
-
-    # 东方财富
-    if not result:
-        result = fetch_klines_from_eastmoney(symbol, interval, start_date, end_date)
-        if result:
-            for k in result:
-                k["data_source"] = DataSource.EASTMONEY.value
-
-    # 新浪作为 fallback
-    if not result and settings.MARKET_DATA_PROVIDER != "sina":
-        result = fetch_klines_from_sina(symbol, interval, start_date, end_date)
-        if result:
-            for k in result:
-                k["data_source"] = DataSource.SINA.value
-
-    # 降级到 akshare（仅日线）
-    if not result and interval == "1d":
-        result = _fetch_klines_from_akshare(symbol, interval)
-        if result:
-            for k in result:
-                k["data_source"] = DataSource.AKSHARE.value
-
-    # 交叉校验：K线获取成功后，从第二源拉取并对比
-    if settings.CROSS_VALIDATION_ENABLED and result:
-        try:
-            cross_validate_klines_for_symbol(
-                symbol, interval, result,
-                primary_source=settings.MARKET_DATA_PROVIDER,
-                start_date=start_date,
-                end_date=end_date,
-            )
-        except Exception:
-            logger.debug("K线交叉校验异常 %s", symbol, exc_info=True)
+    # 新浪财经 — 主数据源（数据来自沪深交易所，与东方财富同源）
+    result = fetch_klines_from_sina(symbol, interval, start_date, end_date)
+    if result:
+        for k in result:
+            k["data_source"] = DataSource.SINA.value
+        logger.debug("新浪K线 %s: %d条", symbol, len(result))
+    else:
+        logger.error("新浪K线获取失败 %s — 数据源不可用", symbol)
 
     return result
 
@@ -139,13 +110,13 @@ def fetch_klines_from_eastmoney(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
 ) -> Optional[List[Dict[str, Any]]]:
-    """从东方财富获取 K 线数据。"""
+    """从东方财富获取 K 线数据（备用 — push API 可能被 CDN 阻断）。"""
     try:
         from app.utils.eastmoney_client import fetch_kline
 
         return fetch_kline(symbol, interval, start_date, end_date, fqt=1)
-    except Exception as e:
-        logger.warning("东方财富K线获取失败 %s: %s", symbol, e)
+    except Exception:
+        logger.debug("东方财富K线不可用 %s（CDN阻断，已使用新浪替代）", symbol)
         return None
 
 
@@ -164,8 +135,8 @@ def _refresh_tickers_from_eastmoney(db: Session, symbols: List[SymbolInfo]):
         from app.utils.eastmoney_client import fetch_realtime_quotes
 
         quotes = fetch_realtime_quotes([s.symbol for s in a_stocks])
-    except Exception as e:
-        logger.warning("东方财富行情获取失败: %s", e)
+    except Exception:
+        logger.debug("东方财富行情不可用（CDN阻断，已使用新浪替代）")
         if should_allow_mock_fallback(context=f"eastmoney ticker refresh ({len(a_stocks)} symbols)"):
             _refresh_tickers_mock(db, symbols)
         return
@@ -313,7 +284,7 @@ def _refresh_tickers_with_fallback(db: Session, symbols: List[SymbolInfo]):
 
         quotes = fetch_realtime_quotes([s.symbol for s in a_stocks])
     except Exception as e:
-        logger.warning("东方财富行情获取失败，降级到新浪: %s", e)
+        logger.debug("东方财富行情不可用，使用新浪: %s", e)
         quotes = None
 
     if quotes:

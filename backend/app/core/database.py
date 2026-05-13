@@ -21,6 +21,8 @@ engine = create_async_engine(
 @event.listens_for(engine.sync_engine, "connect")
 def _set_sqlite_pragma(dbapi_connection, _connection_record):
     """启用 SQLite WAL 模式，允许读写并发"""
+    if not settings.DEBUG:
+        return
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA busy_timeout=15000")

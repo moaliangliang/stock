@@ -148,9 +148,17 @@ class ExchangeAdapterFactory:
             cls._adapter_instances[cache_key] = adapter
             return adapter
 
+        if name == "eastmoney_direct":
+            from app.utils.eastmoney_trade_adapter import EastMoneyDirectAdapter
+            adapter = EastMoneyDirectAdapter(
+                timeout=kwargs.get("timeout", 15),
+            )
+            cls._adapter_instances[cache_key] = adapter
+            return adapter
+
         adapter_class = cls._adapters.get(name)
         if not adapter_class:
-            raise ValueError(f"不支持的交易所: {exchange}，可选: {list(cls._adapters.keys())} + eastmoney")
+            raise ValueError(f"不支持的交易所: {exchange}，可选: mock/sandbox/eastmoney/eastmoney_direct")
         adapter = adapter_class(**kwargs)
         cls._adapter_instances[cache_key] = adapter
         return adapter

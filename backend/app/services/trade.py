@@ -46,7 +46,16 @@ async def create_order(
     quantity = float(order_data["quantity"])
     price = float(order_data["price"]) if order_data.get("price") else None
     stop_price = float(order_data["stop_price"]) if order_data.get("stop_price") else None
-    sandbox = order_data.get("sandbox", True)
+    sandbox = order_data.get("sandbox", None)
+    if sandbox is None:
+        from app.core.config import settings
+        sandbox = settings.ORDER_EXECUTION_MODE in ("sandbox", "mock")
+
+    # -- Risk check before any order (protects both API and auto-trade paths) --
+    from app.services.risk import check_risk_rules
+    risk_result = await check_risk_rules(db, user_id, symbol, order_data)
+    if not risk_result["passed"]:
+        raise ValueError(risk_result.get("message", "Risk check failed"))
 
     # -- Validation --
     # Price is required for limit orders
@@ -97,6 +106,37 @@ async def create_order(
         )
         db.add(trade)
         await db.flush()
+
+        # Update position after fill
+        fill_qty = order.filled_quantity
+        fill_price = order.avg_price
+        existing = await get_position(db, user_id, order.symbol)
+        if order.side == OrderSide.BUY:
+            if existing and existing.quantity > 0:
+                total_cost = existing.quantity * existing.cost_price + fill_qty * fill_price
+                new_qty = existing.quantity + fill_qty
+                new_avg_cost = total_cost / new_qty
+                await update_position(db, user_id, order.symbol, {
+                    "quantity": new_qty,
+                    "available_quantity": new_qty,
+                    "cost_price": new_avg_cost,
+                    "current_price": fill_price,
+                })
+            else:
+                await update_position(db, user_id, order.symbol, {
+                    "quantity": fill_qty,
+                    "available_quantity": fill_qty,
+                    "cost_price": fill_price,
+                    "current_price": fill_price,
+                })
+        else:  # SELL
+            if existing and existing.quantity > 0:
+                new_qty = max(existing.quantity - fill_qty, 0)
+                await update_position(db, user_id, order.symbol, {
+                    "quantity": new_qty,
+                    "available_quantity": new_qty,
+                    "current_price": fill_price,
+                })
 
     return order
 
@@ -356,8 +396,12 @@ async def _execute_via_adapter(order: Order, db: AsyncSession) -> None:
         status = result.get("status", "")
         if status in ("filled", "全部成交"):
             order.status = OrderStatus.FILLED
-        elif status in ("pending", "已报", "部成"):
+        elif status in ("partial", "部成"):
             order.status = OrderStatus.PARTIAL
+        elif status in ("canceled", "已撤"):
+            order.status = OrderStatus.CANCELED
+        elif status in ("rejected", "废单"):
+            order.status = OrderStatus.REJECTED
         else:
             order.status = OrderStatus.PENDING
     except Exception as e:
@@ -562,6 +606,7 @@ async def _refresh_position_price(db: AsyncSession, position: PositionModel) -> 
                 price = float(ticker.last_price)
                 position.current_price = price
                 position.market_value = round(position.quantity * price, 2)
+                position.margin = round(position.market_value / position.leverage, 2) if position.leverage > 0 else position.market_value
                 position.pnl = round(position.quantity * (price - position.cost_price), 2)
                 position.pnl_ratio = round((price - position.cost_price) / abs(position.cost_price) * 100, 2) if position.cost_price != 0 else 0
                 # 优先用 prev_close 精确计算当日价格变动
@@ -656,11 +701,13 @@ async def sync_positions_from_eastmoney(
             raise ValueError(f"东方财富代理获取持仓失败: {e}")
 
     if raw_positions is None:
+        from app.utils.eastmoney_account_client import EastMoneyAccountClient
+        missing = EastMoneyAccountClient.missing_fields()
+        missing_str = ", ".join(missing) if missing else "无"
         raise ValueError(
-            "东方财富账号未配置。请选择以下其一：\n"
-            "  方式A: 浏览器登录 tradeapp.eastmoney.com → F12 → Application → Cookies "
-            "复制 userid/ctToken/utToken/fundaccount/secuid 到 .env 的 EM_ACCOUNT_* 字段\n"
-            "  方式B: Windows 端运行 eastmoney_agent.py 后，设置 EM_TRADE_AGENT_URL=http://<Windows_IP>:8520"
+            "东方财富账号未配置。缺少字段: {}\n"
+            "获取方法: 浏览器登录 https://jywgmix.18.cn/ → F12 → Console "
+            "→ 粘贴 scripts/em_capture.js 运行 → 复制输出中对应的字段值填入 .env 的 EM_ACCOUNT_* 字段".format(missing_str)
         )
 
     if not raw_positions:
@@ -669,7 +716,9 @@ async def sync_positions_from_eastmoney(
 
     created = 0
     updated = 0
+    deleted = 0
     synced = []
+    synced_symbols = set()
 
     for raw in raw_positions:
         symbol = raw.get("symbol", "")
@@ -680,6 +729,8 @@ async def sync_positions_from_eastmoney(
         cost_price = raw.get("cost_price", 0)
         if quantity <= 0:
             continue
+
+        synced_symbols.add(symbol)
 
         # 检测是否已存在
         from sqlalchemy import and_, select as sqla_select
@@ -710,15 +761,176 @@ async def sync_positions_from_eastmoney(
             "market_value": raw.get("market_value", 0),
         })
 
+    # 删除东方财富中已不存在的旧持仓
+    from sqlalchemy import delete as sqla_delete
+    stale_result = await db.execute(
+        sqla_delete(PositionModel).where(
+            and_(
+                PositionModel.user_id == user_id,
+                PositionModel.symbol.not_in(synced_symbols),
+            )
+        )
+    )
+    deleted = stale_result.rowcount
+    if deleted:
+        logger.info("清理陈旧持仓 %s 条", deleted)
+
     logger.info(
-        "东方财富持仓同步完成: 新建 %s, 更新 %s, 共 %s 条",
-        created, updated, len(synced),
+        "东方财富持仓同步完成: 新建 %s, 更新 %s, 删除 %s, 共 %s 条",
+        created, updated, deleted, len(synced),
     )
     return {
         "created": created,
         "updated": updated,
+        "deleted": deleted,
         "total": len(synced),
         "positions": synced,
+    }
+
+
+async def sync_orders_from_eastmoney(
+    db: AsyncSession,
+    user_id: int,
+) -> Dict[str, Any]:
+    """从东方财富同步今日委托状态到本地订单表。
+
+    匹配逻辑：本地 order_id_exchange == 东方财富 Wtbh(委托编号)
+    更新：filled_quantity, avg_price, status, fee
+    """
+    import logging
+    from app.models.order import Order as OrderModel, OrderStatus, Trade as TradeModel
+    from app.utils.eastmoney_account_client import EastMoneyAccountClient
+
+    logger = logging.getLogger(__name__)
+
+    client = EastMoneyAccountClient.from_settings()
+    if not client.is_configured:
+        raise ValueError("东方财富账号未配置")
+
+    try:
+        orders = await client.query_today_orders()
+        trades = await client.query_today_trades()
+    except RuntimeError as e:
+        raise ValueError(f"东方财富委托查询失败: {e}")
+
+    if not orders:
+        return {"synced": 0, "updated": 0, "orders": [], "trades": len(trades)}
+
+    updated = 0
+    synced = []
+
+    for em_order in orders:
+        entrust_no = em_order.get("entrust_no", "")
+        if not entrust_no:
+            continue
+
+        # Find local order by exchange order ID
+        from sqlalchemy import and_, select as sqla_select
+        result = await db.execute(
+            sqla_select(OrderModel).where(
+                and_(
+                    OrderModel.user_id == user_id,
+                    OrderModel.order_id_exchange == entrust_no,
+                )
+            )
+        )
+        local = result.scalar_one_or_none()
+
+        if local is None:
+            continue
+
+        # Map East Money status to our status
+        em_status = em_order.get("status", "")
+        em_status_text = em_order.get("status_text", "")
+        new_status = None
+        if "已成" in em_status_text or "成交" in em_status_text or em_status == "6":
+            new_status = OrderStatus.FILLED
+        elif "部成" in em_status_text or em_status == "5":
+            new_status = OrderStatus.PARTIAL
+        elif "已撤" in em_status_text or em_status == "4":
+            new_status = OrderStatus.CANCELED
+        elif "已报" in em_status_text or em_status in ("1", "2"):
+            new_status = OrderStatus.PENDING
+        elif "废单" in em_status_text or em_status == "9":
+            new_status = OrderStatus.REJECTED
+
+        if new_status and new_status != local.status:
+            local.status = new_status
+            updated += 1
+
+        local.filled_quantity = float(em_order.get("filled_quantity", local.filled_quantity))
+        local.quantity = float(em_order.get("quantity", local.quantity))
+
+        synced.append({
+            "entrust_no": entrust_no,
+            "symbol": em_order.get("symbol", ""),
+            "status": new_status.value if new_status else local.status.value,
+            "filled_quantity": local.filled_quantity,
+        })
+
+    # Record trades for fully/partially filled orders
+    trade_added = 0
+    for em_trade in trades:
+        entrust_no = em_trade.get("entrust_no", "")
+        trade_id_ex = em_trade.get("trade_id", "")
+        if not entrust_no:
+            continue
+
+        # Find local order
+        result = await db.execute(
+            sqla_select(OrderModel).where(
+                and_(
+                    OrderModel.user_id == user_id,
+                    OrderModel.order_id_exchange == entrust_no,
+                )
+            )
+        )
+        local = result.scalar_one_or_none()
+        if local is None:
+            continue
+
+        # Check if this trade already exists
+        existing_trade = await db.execute(
+            sqla_select(TradeModel).where(TradeModel.trade_id_exchange == trade_id_ex)
+        )
+        if existing_trade.scalar_one_or_none():
+            continue
+
+        trade_time = em_trade.get("time", "")
+        try:
+            from datetime import datetime as dt
+            parsed_time = dt.strptime(trade_time, "%H:%M:%S")
+            trade_dt = dt.now().replace(
+                hour=parsed_time.hour, minute=parsed_time.minute,
+                second=parsed_time.second, microsecond=0,
+            )
+        except (ValueError, TypeError):
+            trade_dt = dt.now()
+
+        trade = TradeModel(
+            order_id=local.id,
+            trade_id_exchange=trade_id_ex,
+            symbol=local.symbol,
+            side=local.side,
+            price=float(em_trade.get("price", 0)),
+            quantity=float(em_trade.get("quantity", 0)),
+            fee=0,
+            trade_time=trade_dt,
+        )
+        db.add(trade)
+        trade_added += 1
+
+    await db.flush()
+
+    logger.info(
+        "东方财富委托同步完成: 匹配 %s, 更新 %s, 新增成交 %s",
+        len(synced), updated, trade_added,
+    )
+    return {
+        "synced": len(synced),
+        "updated": updated,
+        "trades_added": trade_added,
+        "orders": synced,
     }
 
 

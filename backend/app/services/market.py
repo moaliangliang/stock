@@ -293,24 +293,30 @@ async def get_ticker(db: AsyncSession, symbol: str) -> Optional[Ticker]:
     return result.scalar_one_or_none()
 
 
-async def get_all_tickers(db: AsyncSession) -> List[Ticker]:
+async def get_all_tickers(db: AsyncSession, offset: int = 0, limit: int | None = None) -> List[Ticker]:
     """
-    Get all latest tickers.
+    Get all latest tickers with optional pagination.
 
     Args:
         db: Database session.
+        offset: Number of rows to skip (default 0).
+        limit: Maximum rows to return (None = all).
 
     Returns:
-        A list of all Ticker objects.
+        A list of Ticker objects.
     """
-    result = await db.execute(
-        select(Ticker).order_by(Ticker.symbol)
-    )
+    query = select(Ticker).order_by(Ticker.symbol)
+    if offset:
+        query = query.offset(offset)
+    if limit is not None:
+        query = query.limit(limit)
+    result = await db.execute(query)
     return list(result.scalars().all())
 
 
 async def get_symbols(
-    db: AsyncSession, asset_type: Optional[str] = None
+    db: AsyncSession, asset_type: Optional[str] = None,
+    offset: int = 0, limit: int | None = None,
 ) -> List[SymbolInfo]:
     """
     Get the list of available trading symbols, optionally filtered by asset type.
@@ -318,6 +324,8 @@ async def get_symbols(
     Args:
         db: Database session.
         asset_type: Optional filter (e.g. "stock", "crypto", "future", "forex").
+        offset: Number of rows to skip (default 0).
+        limit: Maximum rows to return (None = all).
 
     Returns:
         A list of SymbolInfo objects.
@@ -326,6 +334,10 @@ async def get_symbols(
     if asset_type:
         query = query.where(SymbolInfo.asset_type == asset_type)
     query = query.order_by(SymbolInfo.symbol)
+    if offset:
+        query = query.offset(offset)
+    if limit is not None:
+        query = query.limit(limit)
 
     result = await db.execute(query)
     return list(result.scalars().all())

@@ -32,10 +32,28 @@ def _run_signal_check_for_symbols(symbols_to_check: List[tuple]):
     from sqlalchemy import select
     from app.models.market_data import KLine, SymbolInfo
     from app.models.notification import Notification
-    from app.tasks.signal_scanner import scan_signals, _assess_signals, confirm_multi_timeframe, push_bark
+    from app.tasks.signal_scanner import scan_signals, _assess_signals, confirm_multi_timeframe
+    from app.utils.notify import push_bark
 
     if not symbols_to_check:
         return
+
+    # ── Dedup: skip if Celery scanner ran within the last 30s ──
+    try:
+        import json as _json
+        import datetime as _dt
+        from app.core.redis import get_sync_redis
+        r = get_sync_redis()
+        cached = r.get("signal_scan:latest")
+        if cached:
+            cached_ts = _json.loads(cached).get("ts", "")
+            if cached_ts:
+                cached_dt = _dt.datetime.fromisoformat(cached_ts)
+                age = (_dt.datetime.now(_dt.timezone.utc) - cached_dt).total_seconds()
+                if age < 30:
+                    return  # Celery scan is fresh, skip duplicate work
+    except Exception:
+        pass
 
     db = SyncSessionLocal()
     try:
@@ -73,6 +91,18 @@ def _run_signal_check_for_symbols(symbols_to_check: List[tuple]):
 
             price = klines[-1]["close"]
             level, score, summary = _assess_signals(signals, price, name)
+
+            # Backtest gate
+            if level in ("STRONG_BUY", "BUY"):
+                from app.services.backtest import filter_signals_by_backtest
+                filtered, gate = filter_signals_by_backtest(signals, symbol)
+                if not gate["passed"]:
+                    if gate.get("best_strategy"):
+                        level = "WATCH"
+                        score = min(score, 40)
+                        summary = f"{summary} [回测门禁: {gate['reason']}]"
+                    else:
+                        continue
 
             mtf_mult = confirm_multi_timeframe(symbol, db)
             adjusted_score = int(score * mtf_mult)

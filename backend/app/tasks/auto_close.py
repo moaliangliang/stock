@@ -84,6 +84,26 @@ def check_stop_orders():
                         f"卖出{int(order.quantity)}股"
                     )
 
+                    # Dispatch risk notification
+                    try:
+                        from app.models.notification import Notification
+                        notif = Notification(
+                            user_id=order.user_id,
+                            type="risk",
+                            title=f"止损触发: {order.symbol}",
+                            content=(f"{order.symbol} 当前价 {current_price:.2f} 触及止损价 "
+                                     f"{order.stop_price}，卖出 {int(order.quantity)} 股"),
+                            metadata_json={
+                                "symbol": order.symbol,
+                                "stop_price": order.stop_price,
+                                "current_price": current_price,
+                                "quantity": order.quantity,
+                            },
+                        )
+                        db.add(notif)
+                    except Exception:
+                        pass
+
             if triggered > 0:
                 db.commit()
                 logger.info(f"[STOP-LOSS] 共触发 {triggered} 笔止损")

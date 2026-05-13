@@ -39,6 +39,7 @@ class Order(Base):
     __table_args__ = (
         Index("idx_orders_user_status", "user_id", "status"),
         Index("idx_orders_symbol_time", "symbol", "created_at"),
+        Index("idx_orders_updated_at", "updated_at"),
     )
 
     id = Column(Integer, primary_key=True, index=True)

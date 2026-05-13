@@ -1,7 +1,4 @@
 """Auto-trade helpers: drawdown factor, position sizing, Kelly fallback."""
-import json
-import os
-import tempfile
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -15,93 +12,56 @@ from app.services.auto_trade import (
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Drawdown factor
+# Drawdown factor (now uses Redis, not JSON file)
 # ══════════════════════════════════════════════════════════════════════
 
 class TestDrawdownFactor:
     def test_normal_no_drawdown(self):
-        """无回撤时因子为1.0"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            peak_file = f.name
-        try:
-            with patch(
-                "app.services.auto_trade.os.path.join",
-                return_value=peak_file,
-            ):
-                # No peak file → total_value becomes the peak
-                dd_pct, factor = _get_drawdown_factor(100000.0)
-                assert dd_pct == 0.0
-                assert factor == 1.0
-        finally:
-            os.unlink(peak_file)
+        """No peak in Redis → total_value becomes the peak"""
+        mock_redis = MagicMock()
+        mock_redis.get.return_value = None  # no stored peak
+        with patch("app.core.redis.get_sync_redis", return_value=mock_redis):
+            dd_pct, factor = _get_drawdown_factor(100000.0)
+            assert dd_pct == 0.0
+            assert factor == 1.0
 
     def test_moderate_drawdown(self):
-        """5-10%回撤因子为0.75"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump({"peak": 110000.0}, f)
-            peak_file = f.name
-        try:
-            with patch(
-                "app.services.auto_trade.os.path.join",
-                return_value=peak_file,
-            ):
-                dd_pct, factor = _get_drawdown_factor(100000.0)
-                assert pytest.approx(dd_pct, abs=0.01) == 0.0909
-                assert factor == 0.75
-        finally:
-            os.unlink(peak_file)
+        """5-10% drawdown factor is 0.75"""
+        mock_redis = MagicMock()
+        mock_redis.get.return_value = "110000.0"  # peak from Redis
+        with patch("app.core.redis.get_sync_redis", return_value=mock_redis):
+            dd_pct, factor = _get_drawdown_factor(100000.0)
+            assert pytest.approx(dd_pct, abs=0.01) == 0.0909
+            assert factor == 0.75
 
     def test_severe_drawdown(self):
-        """10-20%回撤因子为0.5"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump({"peak": 120000.0}, f)
-            peak_file = f.name
-        try:
-            with patch(
-                "app.services.auto_trade.os.path.join",
-                return_value=peak_file,
-            ):
-                dd_pct, factor = _get_drawdown_factor(100000.0)
-                assert 0.10 <= dd_pct < 0.20
-                assert factor == 0.5
-        finally:
-            os.unlink(peak_file)
+        """10-20% drawdown factor is 0.5"""
+        mock_redis = MagicMock()
+        mock_redis.get.return_value = "120000.0"
+        with patch("app.core.redis.get_sync_redis", return_value=mock_redis):
+            dd_pct, factor = _get_drawdown_factor(100000.0)
+            assert 0.10 <= dd_pct < 0.20
+            assert factor == 0.5
 
     def test_stop_trading(self):
-        """超过20%回撤因子为0（停止交易）"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump({"peak": 130000.0}, f)
-            peak_file = f.name
-        try:
-            with patch(
-                "app.services.auto_trade.os.path.join",
-                return_value=peak_file,
-            ):
-                dd_pct, factor = _get_drawdown_factor(100000.0)
-                assert dd_pct >= 0.20
-                assert factor == 0.0
-        finally:
-            os.unlink(peak_file)
+        """>20% drawdown factor is 0 (stop trading)"""
+        mock_redis = MagicMock()
+        mock_redis.get.return_value = "130000.0"
+        with patch("app.core.redis.get_sync_redis", return_value=mock_redis):
+            dd_pct, factor = _get_drawdown_factor(100000.0)
+            assert dd_pct >= 0.20
+            assert factor == 0.0
 
     def test_new_high_updates_peak(self):
-        """新高时更新峰值文件"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump({"peak": 100000.0}, f)
-            peak_file = f.name
-        try:
-            with patch(
-                "app.services.auto_trade.os.path.join",
-                return_value=peak_file,
-            ):
-                dd_pct, factor = _get_drawdown_factor(110000.0)
-                assert dd_pct == 0.0
-                assert factor == 1.0
-                # Peak file should be updated
-                with open(peak_file) as f:
-                    data = json.load(f)
-                    assert data["peak"] == 110000.0
-        finally:
-            os.unlink(peak_file)
+        """New equity high updates peak in Redis"""
+        mock_redis = MagicMock()
+        mock_redis.get.return_value = "100000.0"  # old peak
+        with patch("app.core.redis.get_sync_redis", return_value=mock_redis):
+            dd_pct, factor = _get_drawdown_factor(110000.0)
+            assert dd_pct == 0.0
+            assert factor == 1.0
+            # Redis should have been called to store new peak
+            mock_redis.set.assert_called_with("equity_peak:user:1", "110000.0")
 
 
 # ══════════════════════════════════════════════════════════════════════

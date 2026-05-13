@@ -63,6 +63,39 @@ def sync_eastmoney_positions():
             db.close()
 
 
+@celery_app.task(queue="market")
+def sync_eastmoney_orders():
+    """定时从东方财富同步今日委托状态（仅在实盘模式下生效）"""
+    from app.core.config import settings
+    if settings.ORDER_EXECUTION_MODE not in ("eastmoney", "eastmoney_direct"):
+        return
+    if not settings.EM_ACCOUNT_SYNC_ENABLED:
+        return
+
+    with TaskLock("sync_eastmoney_orders", timeout=120) as acquired:
+        if not acquired:
+            return "Skipped: another instance is running"
+
+        logger.info("开始同步东方财富今日委托")
+        try:
+            import asyncio
+            from app.services.trade import sync_orders_from_eastmoney
+            from app.core.database import AsyncSessionLocal
+
+            async def _run():
+                async with AsyncSessionLocal() as async_db:
+                    return await sync_orders_from_eastmoney(async_db, user_id=1)
+
+            result = asyncio.get_event_loop().run_until_complete(_run())
+            logger.info(
+                "东方财富委托同步完成: 更新 %s 条, 新增成交 %s 条",
+                result.get("updated", 0),
+                result.get("trades_added", 0),
+            )
+        except Exception as e:
+            logger.error(f"东方财富委托同步失败: {e}")
+
+
 @celery_app.task(queue="maintenance")
 def cleanup_old_data(days: int = 90):
     """清理过期 K 线数据"""

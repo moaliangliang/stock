@@ -105,6 +105,7 @@ def generate_investment_decisions():
             }
 
             total_generated = 0
+            decisions_to_trade = []
             for user in users:
                 for symbol in symbols[:10]:
                     try:
@@ -112,6 +113,7 @@ def generate_investment_decisions():
                         if decision:
                             db.add(decision)
                             db.flush()
+                            decisions_to_trade.append(decision)
                             total_generated += 1
                     except Exception as exc:
                         logger.warning(f"Decision failed for user={user.id} symbol={symbol}: {exc}")
@@ -129,6 +131,38 @@ def generate_investment_decisions():
                 d.updated_at = now
 
             db.commit()
+
+            # ── Auto-trade: convert BUY/STRONG_BUY decisions to orders ──
+            from app.core.config import settings
+            if settings.AUTO_TRADE_ENABLED:
+                try:
+                    trade_signals = []
+                    for d in decisions_to_trade:
+                        rec = d.recommendation
+                        if hasattr(rec, 'value'):
+                            rec_val = rec.value
+                        else:
+                            rec_val = str(rec)
+                        if rec_val in ("strong_buy", "STRONG_BUY", "buy", "BUY"):
+                            level = "STRONG_BUY" if rec_val in ("strong_buy", "STRONG_BUY") else "BUY"
+                            signals = [{"type": "多因子决策", "confidence": d.confidence}]
+                            trade_signals.append({
+                                "symbol": d.symbol,
+                                "name": d.symbol,
+                                "price": d.target_price or 0,
+                                "level": level,
+                                "score": d.confidence,
+                                "signals": signals,
+                            })
+                    if trade_signals:
+                        from app.services.auto_trade import execute_signal_batch_sync
+                        auto_results = execute_signal_batch_sync(db, user_id=users[0].id if users else 1, stock_signals=trade_signals)
+                        executed = sum(1 for r in auto_results if r.get("auto_trade", {}).get("executed"))
+                        if executed > 0:
+                            logger.info(f"[DECISION-AUTO-TRADE] {executed}/{len(trade_signals)} trades executed from investment decisions")
+                except Exception as exc:
+                    logger.error(f"[DECISION-AUTO-TRADE] Error: {exc}")
+
             logger.info(f"决策生成完成: {total_generated} generated, {len(expired)} expired")
             return f"Generated {total_generated} decisions, expired {len(expired)}"
 
